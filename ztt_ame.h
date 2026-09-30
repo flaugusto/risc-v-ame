@@ -58,6 +58,61 @@ extern "C" {
 #define AME_ACC_REG_SIZE_BYTES    ((AME_NELEM * AME_MAX_DATATYPE_SIZE) / 8)
 
 /******************************************************************************
+ * Register Aliases (Ztt v0.6 Section 2.2 & 2.3)
+ ******************************************************************************/
+/* Matrix register aliases m0..m31 */
+#define m0   0
+#define m1   1
+#define m2   2
+#define m3   3
+#define m4   4
+#define m5   5
+#define m6   6
+#define m7   7
+#define m8   8
+#define m9   9
+#define m10  10
+#define m11  11
+#define m12  12
+#define m13  13
+#define m14  14
+#define m15  15
+#define m16  16
+#define m17  17
+#define m18  18
+#define m19  19
+#define m20  20
+#define m21  21
+#define m22  22
+#define m23  23
+#define m24  24
+#define m25  25
+#define m26  26
+#define m27  27
+#define m28  28
+#define m29  29
+#define m30  30
+#define m31  31
+
+/* Accumulator register aliases acc0..acc15 */
+#define acc0  0
+#define acc1  1
+#define acc2  2
+#define acc3  3
+#define acc4  4
+#define acc5  5
+#define acc6  6
+#define acc7  7
+#define acc8  8
+#define acc9  9
+#define acc10 10
+#define acc11 11
+#define acc12 12
+#define acc13 13
+#define acc14 14
+#define acc15 15
+
+/******************************************************************************
  * Datatype Descriptors (Ztt v0.6 Section 2.4)
  * 32-bit specifier:
  * - Bit 31: 0 = Standard, 1 = Custom

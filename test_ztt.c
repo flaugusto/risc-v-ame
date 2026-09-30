@@ -34,7 +34,7 @@ static bool test_ownership(void)
     ame_init(&ame);
 
     /* Initially unowned: any instruction should fail with NOT_OWNED */
-    ame_err_t err = ame_msettyp(&ame, 0, AME_DTYPE_FP32);
+    ame_err_t err = ame_msettyp(&ame, m0, AME_DTYPE_FP32);
     TEST_ASSERT(err == AME_ERR_NOT_OWNED, "Instruction before acquire must fail with NOT_OWNED");
 
     /* Acquire backend */
@@ -45,7 +45,7 @@ static bool test_ownership(void)
     TEST_ASSERT((ame.ameown & AME_OWN_OWNED) != 0, "ameown.OWNED must be 1");
 
     /* Now instructions should succeed */
-    err = ame_msettyp(&ame, 0, AME_DTYPE_FP32);
+    err = ame_msettyp(&ame, m0, AME_DTYPE_FP32);
     TEST_ASSERT(err == AME_OK, "msettyp must succeed when owned");
 
     /* Release backend */
@@ -54,7 +54,7 @@ static bool test_ownership(void)
     TEST_ASSERT((ame.ameown & AME_OWN_OWNED) == 0, "ameown.OWNED must be 0 after release");
 
     /* Instructions must fail again */
-    err = ame_msettyp(&ame, 0, AME_DTYPE_FP32);
+    err = ame_msettyp(&ame, m0, AME_DTYPE_FP32);
     TEST_ASSERT(err == AME_ERR_NOT_OWNED, "Instruction after release must fail with NOT_OWNED");
 
     return true;
@@ -71,34 +71,34 @@ static bool test_datatypes_and_zeroing(void)
     ame_acquire(&ame, NULL, 0);
 
     /* Fill M0 with dirty byte pattern */
-    memset(ame.M[0], 0xAA, AME_M_REG_SIZE_BYTES);
+    memset(ame.M[m0], 0xAA, AME_M_REG_SIZE_BYTES);
 
     /* msettyp m0, AME_DTYPE_FP32 -> must clear raw bits to 0 */
-    ame_err_t err = ame_msettyp(&ame, 0, AME_DTYPE_FP32);
+    ame_err_t err = ame_msettyp(&ame, m0, AME_DTYPE_FP32);
     TEST_ASSERT(err == AME_OK, "msettyp failed");
 
     for (size_t b = 0; b < AME_M_REG_SIZE_BYTES; ++b)
     {
-        TEST_ASSERT(ame.M[0][b] == 0, "msettyp must raw-clear all physical bits of M register");
+        TEST_ASSERT(ame.M[m0][b] == 0, "msettyp must raw-clear all physical bits of M register");
     }
 
     /* Verify mgettyp reads back the same value */
     uint32_t rd = 0;
-    err = ame_mgettyp(&ame, &rd, 0);
+    err = ame_mgettyp(&ame, &rd, m0);
     TEST_ASSERT(err == AME_OK, "mgettyp failed");
     TEST_ASSERT(rd == AME_DTYPE_FP32, "mgettyp value mismatch");
 
     /* Fill Acc0 with dirty pattern and asettyp */
-    memset(ame.Acc[0], 0x55, AME_ACC_REG_SIZE_BYTES);
-    err = ame_asettyp(&ame, 0, AME_DTYPE_FP32);
+    memset(ame.Acc[acc0], 0x55, AME_ACC_REG_SIZE_BYTES);
+    err = ame_asettyp(&ame, acc0, AME_DTYPE_FP32);
     TEST_ASSERT(err == AME_OK, "asettyp failed");
 
     for (size_t b = 0; b < AME_ACC_REG_SIZE_BYTES; ++b)
     {
-        TEST_ASSERT(ame.Acc[0][b] == 0, "asettyp must raw-clear all physical bits of Acc register");
+        TEST_ASSERT(ame.Acc[acc0][b] == 0, "asettyp must raw-clear all physical bits of Acc register");
     }
 
-    err = ame_agettyp(&ame, &rd, 0);
+    err = ame_agettyp(&ame, &rd, acc0);
     TEST_ASSERT(err == AME_OK, "agettyp failed");
     TEST_ASSERT(rd == AME_DTYPE_FP32, "agettyp value mismatch");
 
@@ -115,7 +115,7 @@ static bool test_memory_roundtrip(void)
     ame_init(&ame);
     ame_acquire(&ame, NULL, 0);
 
-    ame_msettyp(&ame, 2, AME_DTYPE_FP32);
+    ame_msettyp(&ame, m2, AME_DTYPE_FP32);
 
     float src_tile[AME_NELEM];
     float dst_tile[AME_NELEM];
@@ -127,11 +127,11 @@ static bool test_memory_roundtrip(void)
     }
 
     /* mls.rm m2, src_tile */
-    ame_err_t err = ame_mls_rm(&ame, 2, src_tile);
+    ame_err_t err = ame_mls_rm(&ame, m2, src_tile);
     TEST_ASSERT(err == AME_OK, "mls.rm failed");
 
     /* mss.rm m2, dst_tile */
-    err = ame_mss_rm(&ame, 2, dst_tile);
+    err = ame_mss_rm(&ame, m2, dst_tile);
     TEST_ASSERT(err == AME_OK, "mss.rm failed");
 
     /* Compare */
@@ -154,18 +154,18 @@ static bool test_type_mismatch(void)
     ame_acquire(&ame, NULL, 0);
 
     /* Configure m0 as FP32 and acc0 as INT32 */
-    ame_msettyp(&ame, 0, AME_DTYPE_FP32);
-    ame_asettyp(&ame, 0, AME_DTYPE_INT32);
+    ame_msettyp(&ame, m0, AME_DTYPE_FP32);
+    ame_asettyp(&ame, acc0, AME_DTYPE_INT32);
 
     /* Try mmov.m.a: types differ! */
     TEST_ASSERT((ame.amestatus & AME_STATUS_UN) == 0, "amestatus.UN must initially be 0");
-    ame_err_t err = ame_mmov_m_a(&ame, 0, 0);
+    ame_err_t err = ame_mmov_m_a(&ame, m0, acc0);
     TEST_ASSERT(err == AME_ERR_UNSUPPORTED, "Mismatched mmov.m.a must return AME_ERR_UNSUPPORTED");
     TEST_ASSERT((ame.amestatus & AME_STATUS_UN) != 0, "amestatus.UN must be set after mismatch");
 
     /* Try mmulacc with mismatched operands */
-    ame_msettyp(&ame, 1, AME_DTYPE_INT32);
-    err = ame_mmulacc_2d(&ame, 0, 0, 1); /* acc=INT32, m0=FP32, m1=INT32 */
+    ame_msettyp(&ame, m1, AME_DTYPE_INT32);
+    err = ame_mmulacc_2d(&ame, acc0, m0, m1); /* acc=INT32, m0=FP32, m1=INT32 */
     TEST_ASSERT(err == AME_ERR_UNSUPPORTED, "Mismatched mmulacc.2d must return AME_ERR_UNSUPPORTED");
 
     return true;
@@ -214,16 +214,16 @@ static bool test_single_tile_sgemm(void)
     }
 
     /* Hardware simulation */
-    ame_msettyp(&ame, 0, AME_DTYPE_FP32);
-    ame_msettyp(&ame, 1, AME_DTYPE_FP32);
-    ame_asettyp(&ame, 0, AME_DTYPE_FP32);
+    ame_msettyp(&ame, m0, AME_DTYPE_FP32);
+    ame_msettyp(&ame, m1, AME_DTYPE_FP32);
+    ame_asettyp(&ame, acc0, AME_DTYPE_FP32);
 
-    ame_mzero_2d_acc(&ame, 0);
-    ame_mls_rm(&ame, 0, A);
-    ame_mls_rm(&ame, 1, B);
-    ame_mmulacc_2d(&ame, 0, 0, 1);
-    ame_mmov_m_a(&ame, 0, 0);
-    ame_mss_rm(&ame, 0, C_hw);
+    ame_mzero_2d_acc(&ame, acc0);
+    ame_mls_rm(&ame, m0, A);
+    ame_mls_rm(&ame, m1, B);
+    ame_mmulacc_2d(&ame, acc0, m0, m1);
+    ame_mmov_m_a(&ame, m0, acc0);
+    ame_mss_rm(&ame, m0, C_hw);
 
     /* Verify equality */
     for (int i = 0; i < AME_NELEM; ++i)
@@ -275,16 +275,16 @@ static bool test_single_tile_igemm(void)
         }
     }
 
-    ame_msettyp(&ame, 0, AME_DTYPE_INT32);
-    ame_msettyp(&ame, 1, AME_DTYPE_INT32);
-    ame_asettyp(&ame, 0, AME_DTYPE_INT32);
+    ame_msettyp(&ame, m0, AME_DTYPE_INT32);
+    ame_msettyp(&ame, m1, AME_DTYPE_INT32);
+    ame_asettyp(&ame, acc0, AME_DTYPE_INT32);
 
-    ame_mzero_2d_acc(&ame, 0);
-    ame_mls_rm(&ame, 0, A);
-    ame_mls_rm(&ame, 1, B);
-    ame_mmulacc_2d(&ame, 0, 0, 1);
-    ame_mmov_m_a(&ame, 0, 0);
-    ame_mss_rm(&ame, 0, C_hw);
+    ame_mzero_2d_acc(&ame, acc0);
+    ame_mls_rm(&ame, m0, A);
+    ame_mls_rm(&ame, m1, B);
+    ame_mmulacc_2d(&ame, acc0, m0, m1);
+    ame_mmov_m_a(&ame, m0, acc0);
+    ame_mss_rm(&ame, m0, C_hw);
 
     for (int i = 0; i < AME_NELEM; ++i)
     {
@@ -420,6 +420,39 @@ static bool test_full_igemm(void)
 }
 
 /******************************************************************************
+ * Test 9: Register Aliases Readability & Functionality
+ ******************************************************************************/
+static bool test_register_aliases(void)
+{
+    printf(COLOR_BLUE "[RUN] test_register_aliases" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    uint32_t rd = 0;
+    ame_acquire(&ame, &rd, 0);
+
+    /* Use symbolic aliases m0, m1, and acc0 */
+    ame_err_t err = ame_msettyp(&ame, m0, AME_DTYPE_FP32);
+    TEST_ASSERT(err == AME_OK, "ame_msettyp with m0 must succeed");
+
+    err = ame_msettyp(&ame, m1, AME_DTYPE_FP32);
+    TEST_ASSERT(err == AME_OK, "ame_msettyp with m1 must succeed");
+
+    err = ame_asettyp(&ame, acc0, AME_DTYPE_FP32);
+    TEST_ASSERT(err == AME_OK, "ame_asettyp with acc0 must succeed");
+
+    err = ame_mzero_2d_acc(&ame, acc0);
+    TEST_ASSERT(err == AME_OK, "ame_mzero_2d_acc with acc0 must succeed");
+
+    err = ame_mmulacc_2d(&ame, acc0, m0, m1);
+    TEST_ASSERT(err == AME_OK, "ame_mmulacc_2d with acc0, m0, m1 must succeed");
+
+    err = ame_mmov_m_a(&ame, m0, acc0);
+    TEST_ASSERT(err == AME_OK, "ame_mmov_m_a with m0, acc0 must succeed");
+
+    return true;
+}
+
+/******************************************************************************
  * Main Runner
  ******************************************************************************/
 static void run_test(bool (*test_func)(void), const char *name)
@@ -452,6 +485,7 @@ int main(void)
     run_test(test_single_tile_igemm, "Single-tile Int32 IGEMM");
     run_test(test_full_sgemm, "Multi-tile End-to-End SGEMM");
     run_test(test_full_igemm, "Multi-tile End-to-End IGEMM");
+    run_test(test_register_aliases, "Register aliases m0, m1, acc0 functionality");
 
     printf("\n============================================================\n");
     printf("  Summary: %d / %d tests passed (%s)\n",

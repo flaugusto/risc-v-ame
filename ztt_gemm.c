@@ -13,13 +13,13 @@ ame_err_t ztt_sgemm(ame_state_t *ame,
     ame_err_t err;
 
     /* Step 1: Configure register datatypes */
-    err = ame_msettyp(ame, 0, AME_DTYPE_FP32); /* m0: Tile A */
+    err = ame_msettyp(ame, m0, AME_DTYPE_FP32); /* m0: Tile A */
     if (err != AME_OK) return err;
 
-    err = ame_msettyp(ame, 1, AME_DTYPE_FP32); /* m1: Tile B */
+    err = ame_msettyp(ame, m1, AME_DTYPE_FP32); /* m1: Tile B */
     if (err != AME_OK) return err;
 
-    err = ame_asettyp(ame, 0, AME_DTYPE_FP32); /* acc0: Accumulator for Tile C */
+    err = ame_asettyp(ame, acc0, AME_DTYPE_FP32); /* acc0: Accumulator for Tile C */
     if (err != AME_OK) return err;
 
     const int N = AME_N;
@@ -31,7 +31,7 @@ ame_err_t ztt_sgemm(ame_state_t *ame,
     for (int i = 0; i < M; i += N) {
         for (int j = 0; j < P; j += N) {
             /* Clear accumulator acc0 for current C tile */
-            err = ame_mzero_2d_acc(ame, 0);
+            err = ame_mzero_2d_acc(ame, acc0);
             if (err != AME_OK) return err;
 
             for (int k = 0; k < K; k += N) {
@@ -56,23 +56,23 @@ ame_err_t ztt_sgemm(ame_state_t *ame,
                 }
 
                 /* Load tiles into M registers */
-                err = ame_mls_rm(ame, 0, tile_A);
+                err = ame_mls_rm(ame, m0, tile_A);
                 if (err != AME_OK) return err;
 
-                err = ame_mls_rm(ame, 1, tile_B);
+                err = ame_mls_rm(ame, m1, tile_B);
                 if (err != AME_OK) return err;
 
                 /* Multiply and accumulate: acc0 += m0 * m1 */
-                err = ame_mmulacc_2d(ame, 0, 0, 1);
+                err = ame_mmulacc_2d(ame, acc0, m0, m1);
                 if (err != AME_OK) return err;
             }
 
             /* Move accumulated tile to m0 */
-            err = ame_mmov_m_a(ame, 0, 0);
+            err = ame_mmov_m_a(ame, m0, acc0);
             if (err != AME_OK) return err;
 
             /* Store result tile to memory buffer */
-            err = ame_mss_rm(ame, 0, tile_C);
+            err = ame_mss_rm(ame, m0, tile_C);
             if (err != AME_OK) return err;
 
             /* Accumulate result back into C matrix (handling boundary edges) */
@@ -101,13 +101,13 @@ ame_err_t ztt_igemm(ame_state_t *ame,
     ame_err_t err;
 
     /* Step 1: Configure register datatypes */
-    err = ame_msettyp(ame, 0, AME_DTYPE_INT32); /* m0: Tile A */
+    err = ame_msettyp(ame, m0, AME_DTYPE_INT32); /* m0: Tile A */
     if (err != AME_OK) return err;
 
-    err = ame_msettyp(ame, 1, AME_DTYPE_INT32); /* m1: Tile B */
+    err = ame_msettyp(ame, m1, AME_DTYPE_INT32); /* m1: Tile B */
     if (err != AME_OK) return err;
 
-    err = ame_asettyp(ame, 0, AME_DTYPE_INT32); /* acc0: Accumulator for Tile C */
+    err = ame_asettyp(ame, acc0, AME_DTYPE_INT32); /* acc0: Accumulator for Tile C */
     if (err != AME_OK) return err;
 
     const int N = AME_N;
@@ -119,7 +119,7 @@ ame_err_t ztt_igemm(ame_state_t *ame,
     for (int i = 0; i < M; i += N) {
         for (int j = 0; j < P; j += N) {
             /* Clear accumulator acc0 for current C tile */
-            err = ame_mzero_2d_acc(ame, 0);
+            err = ame_mzero_2d_acc(ame, acc0);
             if (err != AME_OK) return err;
 
             for (int k = 0; k < K; k += N) {
@@ -142,23 +142,23 @@ ame_err_t ztt_igemm(ame_state_t *ame,
                 }
 
                 /* Load tiles into M registers */
-                err = ame_mls_rm(ame, 0, tile_A);
+                err = ame_mls_rm(ame, m0, tile_A);
                 if (err != AME_OK) return err;
 
-                err = ame_mls_rm(ame, 1, tile_B);
+                err = ame_mls_rm(ame, m1, tile_B);
                 if (err != AME_OK) return err;
 
                 /* Multiply and accumulate: acc0 += m0 * m1 */
-                err = ame_mmulacc_2d(ame, 0, 0, 1);
+                err = ame_mmulacc_2d(ame, acc0, m0, m1);
                 if (err != AME_OK) return err;
             }
 
             /* Move accumulated tile to m0 */
-            err = ame_mmov_m_a(ame, 0, 0);
+            err = ame_mmov_m_a(ame, m0, acc0);
             if (err != AME_OK) return err;
 
             /* Store result tile to memory buffer */
-            err = ame_mss_rm(ame, 0, tile_C);
+            err = ame_mss_rm(ame, m0, tile_C);
             if (err != AME_OK) return err;
 
             /* Accumulate result back into C matrix */

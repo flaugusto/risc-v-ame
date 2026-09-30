@@ -34,6 +34,7 @@ Diferente do modelo legado em `v0_Gem5` (que utilizava uma ISA customizada com r
   - **Registradores de Matriz ($M$)**: Armazenam operandos de entrada para as multiplicações e resultados de operações elementwise. Se o tipo for maior que o tamanho base da unidade (`AME_UNIT_DATATYPE_SIZE`), múltiplos registradores $M$ consecutivos são agrupados logicamente.
   - **Registradores Acumuladores ($Acc$)**: Destinados exclusivamente a acumular os produtos matriciais das instruções `mmulacc`. Cada acumulador é dimensionado para conter um quadrado lógico completo do maior tipo suportado.
 - Os registradores **não embutem o tipo de dados na instrução assembly**. Em vez disso, cada registrador $M_i$ e $Acc_j$ possui um registrador de metadados correspondente ($Md_i$ e $Ad_j$) configurado previamente por instruções dedicadas (`msettyp` e `asettyp`).
+- **Aliases Mnemônicos**: O cabeçalho `ztt_ame.h` disponibiliza aliases simbólicos (`m0`..`m31` e `acc0`..`acc15`) que espelham a sintaxe do assembly Ztt, melhorando a legibilidade das chamadas de API sem custos em tempo de execução.
 
 ```
           +-------------------------------------------------+
@@ -257,20 +258,20 @@ Dadas as matrizes $A [M \times K]$, $B [K \times P]$ e $C [M \times P]$, a multi
 for (int i = 0; i < M; i += N) {
     for (int j = 0; j < P; j += N) {
         // 1. Zera o acumulador de hardware para o tile C[i, j]
-        ame_mzero_2d_acc(ame, 0);
+        ame_mzero_2d_acc(ame, acc0);
 
         for (int k = 0; k < K; k += N) {
             // 2. Extrai e carrega os blocos A[i, k] e B[k, j] com mls.rm
-            ame_mls_rm(ame, 0, tile_A); // carrega em m0
-            ame_mls_rm(ame, 1, tile_B); // carrega em m1
+            ame_mls_rm(ame, m0, tile_A); // carrega em m0
+            ame_mls_rm(ame, m1, tile_B); // carrega em m1
 
             // 3. Executa a multiplicação-acumulação: acc0 += m0 * m1
-            ame_mmulacc_2d(ame, 0, 0, 1);
+            ame_mmulacc_2d(ame, acc0, m0, m1);
         }
 
         // 4. Move o tile acumulado de volta para m0 e descarrega para a memória
-        ame_mmov_m_a(ame, 0, 0);
-        ame_mss_rm(ame, 0, tile_C);
+        ame_mmov_m_a(ame, m0, acc0);
+        ame_mss_rm(ame, m0, tile_C);
 
         // 5. Soma o resultado ao bloco de destino C[i..i+N, j..j+N]
     }
