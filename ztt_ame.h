@@ -2,6 +2,7 @@
 #define ZTT_AME_H
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -194,6 +195,18 @@ typedef enum {
 /******************************************************************************
  * Architectural State (Ztt v0.6 Chapter 2, 3, 5)
  ******************************************************************************/
+/* Counters of successfully executed instructions and data traffic */
+typedef struct {
+    uint64_t mls_rm;
+    uint64_t mss_rm;
+    uint64_t mmulacc_2d;
+    uint64_t mmov_m_a;
+    uint64_t mmov_a_m;
+    uint64_t bytes_loaded;  /* Bytes read from memory by mls.rm */
+    uint64_t bytes_stored;  /* Bytes written to memory by mss.rm */
+    uint64_t macs;          /* Multiply-accumulate operations performed by mmulacc.2d */
+} ame_stats_t;
+
 typedef struct {
     /* Matrix data registers M0..M[AME_NUM_M_REGS-1] */
     uint8_t M[AME_NUM_M_REGS][AME_M_REG_SIZE_BYTES];
@@ -216,11 +229,18 @@ typedef struct {
 
     /* Hart processor state */
     ame_ms_state_t ms_status; /* mstatus.MS field */
+
+    /* Instruction and traffic counters (not architectural state) */
+    ame_stats_t stats;
 } ame_state_t;
 
 /******************************************************************************
  * API / Instruction Functions (Ztt v0.6 Chapter 5 & 6)
  ******************************************************************************/
+
+/* Statistics */
+void ame_stats_reset(ame_state_t *ame);
+void ame_stats_report(const ame_state_t *ame, FILE *out);
 
 /* State management */
 void ame_init(ame_state_t *ame);
@@ -249,7 +269,7 @@ ame_err_t ame_mzero_2d_m(ame_state_t *ame, uint32_t md);
 
 /* 6.50 & 6.130 Row-Major Memory Transfer */
 ame_err_t ame_mls_rm(ame_state_t *ame, uint32_t md, const void *base_addr);
-ame_err_t ame_mss_rm(const ame_state_t *ame, uint32_t ms, void *base_addr);
+ame_err_t ame_mss_rm(ame_state_t *ame, uint32_t ms, void *base_addr);
 
 /* 6.72 Matrix Multiply-Accumulate */
 ame_err_t ame_mmulacc_2d(ame_state_t *ame, uint32_t acc, uint32_t ms1, uint32_t ms2);

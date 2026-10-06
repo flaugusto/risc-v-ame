@@ -5,6 +5,7 @@
 #include <assert.h>
 #include "ztt_ame.h"
 #include "ztt_gemm.h"
+#include "ztt_tile_pack.h"
 
 #define COLOR_GREEN "\033[0;32m"
 #define COLOR_RED "\033[0;31m"
@@ -295,64 +296,6 @@ static bool test_single_tile_igemm(void)
 }
 
 /******************************************************************************
- * Tile-major layout helpers (test-side packing for the GEMM kernels)
- * The kernels consume padded matrices in block-tiled row-major layout: each
- * N x N tile is contiguous and row-major, and the tile grid is row-major.
- ******************************************************************************/
-static int round_up_to_tile(int x)
-{
-    return ((x + AME_N - 1) / AME_N) * AME_N;
-}
-
-/* Packs a rows x cols row-major matrix into a zero-padded tile-major buffer. */
-static void *pack_tiles(const void *src, int rows, int cols, size_t elem_size)
-{
-    const int N = AME_N;
-    const int prows = round_up_to_tile(rows);
-    const int pcols = round_up_to_tile(cols);
-    uint8_t *dst = (uint8_t *)calloc((size_t)prows * pcols, elem_size);
-    const uint8_t *in = (const uint8_t *)src;
-
-    for (int ti = 0; ti < prows / N; ++ti)
-    {
-        for (int tj = 0; tj < pcols / N; ++tj)
-        {
-            uint8_t *tile = dst + ((size_t)(ti * (pcols / N) + tj) * N * N) * elem_size;
-            for (int r = 0; r < N && ti * N + r < rows; ++r)
-            {
-                for (int c = 0; c < N && tj * N + c < cols; ++c)
-                {
-                    memcpy(tile + ((size_t)r * N + c) * elem_size,
-                           in + ((size_t)(ti * N + r) * cols + (tj * N + c)) * elem_size,
-                           elem_size);
-                }
-            }
-        }
-    }
-    return dst;
-}
-
-/* Extracts the rows x cols region of a tile-major buffer into a row-major matrix. */
-static void unpack_tiles(const void *packed, int rows, int cols, size_t elem_size, void *dst)
-{
-    const int N = AME_N;
-    const int pcols = round_up_to_tile(cols);
-    const uint8_t *in = (const uint8_t *)packed;
-    uint8_t *out = (uint8_t *)dst;
-
-    for (int i = 0; i < rows; ++i)
-    {
-        for (int j = 0; j < cols; ++j)
-        {
-            const uint8_t *tile = in + ((size_t)((i / N) * (pcols / N) + (j / N)) * N * N) * elem_size;
-            memcpy(out + ((size_t)i * cols + j) * elem_size,
-                   tile + ((size_t)(i % N) * N + (j % N)) * elem_size,
-                   elem_size);
-        }
-    }
-}
-
-/******************************************************************************
  * Test 7: Multi-Tile End-to-End SGEMM, C += A * B (M x K x P not multiples of N)
  ******************************************************************************/
 static bool test_full_sgemm(void)
@@ -410,8 +353,14 @@ static bool test_full_sgemm(void)
     }
     printf("       Max diff: %e\n", max_diff);
 
-    free(A); free(B); free(C0); free(C_ref); free(C_hw);
-    free(Ap); free(Bp); free(Cp);
+    free(A);
+    free(B);
+    free(C0);
+    free(C_ref);
+    free(C_hw);
+    free(Ap);
+    free(Bp);
+    free(Cp);
     return true;
 }
 
@@ -465,8 +414,14 @@ static bool test_full_igemm(void)
     for (int i = 0; i < M * P; ++i)
         TEST_ASSERT(C_hw[i] == C_ref[i], "Multi-tile IGEMM result differs from CPU reference C0 + A*B");
 
-    free(A); free(B); free(C0); free(C_ref); free(C_hw);
-    free(Ap); free(Bp); free(Cp);
+    free(A);
+    free(B);
+    free(C0);
+    free(C_ref);
+    free(C_hw);
+    free(Ap);
+    free(Bp);
+    free(Cp);
     return true;
 }
 
@@ -496,6 +451,141 @@ static bool test_gemm_rejects_unpadded_dims(void)
 
     free(fbuf);
     free(ibuf);
+    return true;
+}
+
+/******************************************************************************
+ * Instruction and traffic statistics
+ ******************************************************************************/
+
+/* Runs a GEMM of the given padded size and checks the counters against the
+ * closed-form instruction count of the tiled algorithm. */
+static bool check_gemm_stats(ame_state_t *ame, bool use_float, int M, int K, int P)
+{
+    const int N = AME_N;
+    const unsigned long long Mt = M / N, Kt = K / N, Pt = P / N;
+    const unsigned long long elem = 4;
+    const unsigned long long tile_bytes = (unsigned long long)AME_NELEM * elem;
+
+    float *fA = (float *)calloc((size_t)M * K, sizeof(float));
+    float *fB = (float *)calloc((size_t)K * P, sizeof(float));
+    float *fC = (float *)calloc((size_t)M * P, sizeof(float));
+    ame_stats_reset(ame);
+
+    ame_err_t err = use_float
+        ? ztt_sgemm(ame, M, K, P, fC, fA, fB)
+        : ztt_igemm(ame, M, K, P, (int32_t *)fC, (const int32_t *)fA, (const int32_t *)fB);
+    free(fA);
+    free(fB);
+    free(fC);
+    TEST_ASSERT(err == AME_OK, "gemm failed");
+
+    const ame_stats_t *st = &ame->stats;
+    const unsigned long long loads = Mt * Pt * (1 + 2 * Kt);
+    TEST_ASSERT(st->mls_rm == loads, "mls.rm count mismatch");
+    TEST_ASSERT(st->mss_rm == Mt * Pt, "mss.rm count mismatch");
+    TEST_ASSERT(st->mmulacc_2d == Mt * Pt * Kt, "mmulacc.2d count mismatch");
+    TEST_ASSERT(st->mmov_a_m == Mt * Pt, "mmov.a.m count mismatch");
+    TEST_ASSERT(st->mmov_m_a == Mt * Pt, "mmov.m.a count mismatch");
+    TEST_ASSERT(st->bytes_loaded == loads * tile_bytes, "bytes_loaded mismatch");
+    TEST_ASSERT(st->bytes_stored == Mt * Pt * tile_bytes, "bytes_stored mismatch");
+    TEST_ASSERT(st->macs == (unsigned long long)M * K * P, "macs mismatch");
+    return true;
+}
+
+static bool test_gemm_stats_counts(void)
+{
+    printf(COLOR_BLUE "[RUN] test_gemm_stats_counts" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    ame_acquire(&ame, NULL, 0);
+
+    const int N = AME_N;
+    const int shapes[][3] = {{N, N, N}, {2 * N, 3 * N, N}, {N, 2 * N, 3 * N}, {3 * N, N, 2 * N}};
+    for (size_t s = 0; s < sizeof(shapes) / sizeof(shapes[0]); ++s)
+    {
+        TEST_ASSERT(check_gemm_stats(&ame, true, shapes[s][0], shapes[s][1], shapes[s][2]), "sgemm stats");
+        TEST_ASSERT(check_gemm_stats(&ame, false, shapes[s][0], shapes[s][1], shapes[s][2]), "igemm stats");
+    }
+    return true;
+}
+
+static bool test_stats_ignore_failed_instructions(void)
+{
+    printf(COLOR_BLUE "[RUN] test_stats_ignore_failed_instructions" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+
+    float tile[AME_NELEM] = {0};
+
+    /* Not owned: the load fails and must not count. */
+    TEST_ASSERT(ame_mls_rm(&ame, m0, tile) == AME_ERR_NOT_OWNED, "mls.rm must fail when not owned");
+    TEST_ASSERT(ame.stats.mls_rm == 0 && ame.stats.bytes_loaded == 0, "failed mls.rm must not count");
+
+    /* Datatype mismatch: the move fails and must not count. */
+    ame_acquire(&ame, NULL, 0);
+    ame_msettyp(&ame, m0, AME_DTYPE_FP32);
+    ame_asettyp(&ame, acc0, AME_DTYPE_INT32);
+    TEST_ASSERT(ame_mmov_m_a(&ame, m0, acc0) == AME_ERR_UNSUPPORTED, "mismatched mmov.m.a must fail");
+    TEST_ASSERT(ame_mmov_a_m(&ame, acc0, m0) == AME_ERR_UNSUPPORTED, "mismatched mmov.a.m must fail");
+    TEST_ASSERT(ame.stats.mmov_m_a == 0 && ame.stats.mmov_a_m == 0, "failed mmov must not count");
+
+    /* Mismatched multiply: fails and must not count MACs. */
+    ame_msettyp(&ame, m1, AME_DTYPE_INT32);
+    TEST_ASSERT(ame_mmulacc_2d(&ame, acc0, m0, m1) == AME_ERR_UNSUPPORTED, "mismatched mmulacc.2d must fail");
+    TEST_ASSERT(ame.stats.mmulacc_2d == 0 && ame.stats.macs == 0, "failed mmulacc.2d must not count");
+    return true;
+}
+
+static bool test_stats_reset(void)
+{
+    printf(COLOR_BLUE "[RUN] test_stats_reset" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    ame_acquire(&ame, NULL, 0);
+
+    TEST_ASSERT(check_gemm_stats(&ame, true, AME_N, AME_N, AME_N), "gemm stats");
+    TEST_ASSERT(ame.stats.mmulacc_2d != 0, "counters must be non-zero after a GEMM");
+
+    ame_stats_reset(&ame);
+    const ame_stats_t *st = &ame.stats;
+    TEST_ASSERT(st->mls_rm == 0 && st->mss_rm == 0 && st->mmulacc_2d == 0 &&
+                st->mmov_m_a == 0 && st->mmov_a_m == 0 &&
+                st->bytes_loaded == 0 && st->bytes_stored == 0 && st->macs == 0,
+                "all counters must be zero after reset");
+    return true;
+}
+
+static bool test_stats_report(void)
+{
+    printf(COLOR_BLUE "[RUN] test_stats_report" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    ame_acquire(&ame, NULL, 0);
+
+    const int M = 2 * AME_N, K = AME_N, P = AME_N;
+    TEST_ASSERT(check_gemm_stats(&ame, true, M, K, P), "gemm stats");
+
+    FILE *f = tmpfile();
+    TEST_ASSERT(f != NULL, "tmpfile failed");
+    ame_stats_report(&ame, f);
+    rewind(f);
+    char text[2048] = {0};
+    size_t n = fread(text, 1, sizeof(text) - 1, f);
+    fclose(f);
+    text[n] = '\0';
+
+    char expected[64];
+    snprintf(expected, sizeof(expected), "%llu", (unsigned long long)M * K * P);
+    TEST_ASSERT(strstr(text, expected) != NULL, "report must show the MAC count");
+
+    double intensity = (double)ame.stats.macs / (double)(ame.stats.bytes_loaded + ame.stats.bytes_stored);
+    snprintf(expected, sizeof(expected), "%.2f", intensity);
+    TEST_ASSERT(strstr(text, expected) != NULL, "report must show arithmetic intensity (MACs per byte)");
+
+    double loads_per_mma = (double)ame.stats.mls_rm / (double)ame.stats.mmulacc_2d;
+    snprintf(expected, sizeof(expected), "%.2f", loads_per_mma);
+    TEST_ASSERT(strstr(text, expected) != NULL, "report must show tile loads per mmulacc.2d");
     return true;
 }
 
@@ -566,6 +656,10 @@ int main(void)
     run_test(test_full_sgemm, "Multi-tile End-to-End SGEMM");
     run_test(test_full_igemm, "Multi-tile End-to-End IGEMM");
     run_test(test_gemm_rejects_unpadded_dims, "GEMM rejects dimensions not multiple of N");
+    run_test(test_gemm_stats_counts, "GEMM instruction and traffic counts");
+    run_test(test_stats_ignore_failed_instructions, "Failed instructions are not counted");
+    run_test(test_stats_reset, "Statistics reset");
+    run_test(test_stats_report, "Statistics report");
     run_test(test_register_aliases, "Register aliases m0, m1, acc0 functionality");
 
     printf("\n============================================================\n");

@@ -54,6 +54,41 @@ bool ame_is_dtype_supported(uint32_t dtype) {
     }
 }
 
+static inline void count_mmulacc(ame_state_t *ame) {
+    ame->stats.mmulacc_2d++;
+    ame->stats.macs += (uint64_t)AME_N * AME_N * AME_N;
+}
+
+/******************************************************************************
+ * Statistics
+ ******************************************************************************/
+
+void ame_stats_reset(ame_state_t *ame) {
+    if (!ame) return;
+    memset(&ame->stats, 0, sizeof(ame->stats));
+}
+
+void ame_stats_report(const ame_state_t *ame, FILE *out) {
+    if (!ame || !out) return;
+    const ame_stats_t *st = &ame->stats;
+    const uint64_t bytes = st->bytes_loaded + st->bytes_stored;
+
+    fprintf(out, "mls.rm:       %llu\n", (unsigned long long)st->mls_rm);
+    fprintf(out, "mss.rm:       %llu\n", (unsigned long long)st->mss_rm);
+    fprintf(out, "mmulacc.2d:   %llu\n", (unsigned long long)st->mmulacc_2d);
+    fprintf(out, "mmov.m.a:     %llu\n", (unsigned long long)st->mmov_m_a);
+    fprintf(out, "mmov.a.m:     %llu\n", (unsigned long long)st->mmov_a_m);
+    fprintf(out, "bytes loaded: %llu\n", (unsigned long long)st->bytes_loaded);
+    fprintf(out, "bytes stored: %llu\n", (unsigned long long)st->bytes_stored);
+    fprintf(out, "MACs:         %llu\n", (unsigned long long)st->macs);
+    if (bytes != 0) {
+        fprintf(out, "arithmetic intensity (MACs/byte): %.2f\n", (double)st->macs / (double)bytes);
+    }
+    if (st->mmulacc_2d != 0) {
+        fprintf(out, "tile loads per mmulacc.2d:        %.2f\n", (double)st->mls_rm / (double)st->mmulacc_2d);
+    }
+}
+
 /******************************************************************************
  * Hardware Initialization & Control
  ******************************************************************************/
@@ -252,10 +287,12 @@ ame_err_t ame_mls_rm(ame_state_t *ame, uint32_t md, const void *base_addr) {
 
     size_t total_bytes = (size_t)AME_NELEM * elem_bytes;
     memcpy(ame->M[md], base_addr, total_bytes);
+    ame->stats.mls_rm++;
+    ame->stats.bytes_loaded += total_bytes;
     return AME_OK;
 }
 
-ame_err_t ame_mss_rm(const ame_state_t *ame, uint32_t ms, void *base_addr) {
+ame_err_t ame_mss_rm(ame_state_t *ame, uint32_t ms, void *base_addr) {
     ame_err_t err = check_active(ame);
     if (err != AME_OK) return err;
 
@@ -279,6 +316,8 @@ ame_err_t ame_mss_rm(const ame_state_t *ame, uint32_t ms, void *base_addr) {
 
     size_t total_bytes = (size_t)AME_NELEM * elem_bytes;
     memcpy(base_addr, ame->M[ms], total_bytes);
+    ame->stats.mss_rm++;
+    ame->stats.bytes_stored += total_bytes;
     return AME_OK;
 }
 
@@ -312,6 +351,7 @@ ame_err_t ame_mmov_m_a(ame_state_t *ame, uint32_t md, uint32_t acc) {
     size_t total_bytes = (size_t)AME_NELEM * elem_bytes;
 
     memcpy(ame->M[md], ame->Acc[acc], total_bytes);
+    ame->stats.mmov_m_a++;
     return AME_OK;
 }
 
@@ -340,6 +380,7 @@ ame_err_t ame_mmov_a_m(ame_state_t *ame, uint32_t acc, uint32_t ms) {
     size_t total_bytes = (size_t)AME_NELEM * elem_bytes;
 
     memcpy(ame->Acc[acc], ame->M[ms], total_bytes);
+    ame->stats.mmov_a_m++;
     return AME_OK;
 }
 
@@ -383,6 +424,7 @@ ame_err_t ame_mmulacc_2d(ame_state_t *ame, uint32_t acc, uint32_t ms1, uint32_t 
                 C[i * N + j] += sum;
             }
         }
+        count_mmulacc(ame);
         return AME_OK;
     }
 
@@ -401,6 +443,7 @@ ame_err_t ame_mmulacc_2d(ame_state_t *ame, uint32_t acc, uint32_t ms1, uint32_t 
                 C[i * N + j] += (int32_t)sum;
             }
         }
+        count_mmulacc(ame);
         return AME_OK;
     }
 
@@ -419,6 +462,7 @@ ame_err_t ame_mmulacc_2d(ame_state_t *ame, uint32_t acc, uint32_t ms1, uint32_t 
                 C[i * N + j] += (uint32_t)sum;
             }
         }
+        count_mmulacc(ame);
         return AME_OK;
     }
 

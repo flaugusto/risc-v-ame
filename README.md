@@ -297,6 +297,12 @@ cd ztt_ame
 make test
 ```
 
+### Benchmark de Contadores
+```bash
+make bench
+```
+Executa `ztt_sgemm` para várias formas de matriz e imprime uma tabela com as contagens de instruções, MACs, intensidade aritmética e a fração de MACs úteis (sem *padding*).
+
 ### Configuração Dinâmica da Dimensão do Tile ($N$)
 É possível compilar o simulador com qualquer dimensão válida para `AME_NELEM` via flag `CFLAGS`:
 
@@ -347,3 +353,29 @@ O arquivo `test_ztt.c` contém testes unitários e de integração que validam c
    - Multiplicação multi-tile com matrizes arbitrárias de floats ($M=24, K=20, P=28$). Valida que o erro máximo contra a CPU é inferior a $10^{-4}$.
 8. **`test_full_igemm`**:
    - Multiplicação multi-tile com matrizes arbitrárias de inteiros ($M=24, K=20, P=28$). Valida igualdade exata com a CPU.
+9. **`test_gemm_stats_counts`**:
+   - Executa `ztt_sgemm` e `ztt_igemm` em várias formas de grade de tiles e compara os contadores com a contagem analítica do algoritmo.
+10. **`test_stats_ignore_failed_instructions`**:
+    - Valida que instruções rejeitadas (sem posse, tipos incompatíveis) não alteram os contadores.
+11. **`test_stats_reset`** e **`test_stats_report`**:
+    - Validam `ame_stats_reset` e que `ame_stats_report` imprime os valores dos contadores e as métricas derivadas.
+
+---
+
+## 9. Estatísticas de Instruções e Tráfego
+
+`ame_state_t` contém um `ame_stats_t stats` com contadores incrementados apenas por instruções bem-sucedidas:
+
+| Contador | Incrementado por |
+| :--- | :--- |
+| `mls_rm`, `mss_rm`, `mmulacc_2d`, `mmov_m_a`, `mmov_a_m` | cada chamada bem-sucedida da instrução |
+| `bytes_loaded` | `mls.rm`: `AME_NELEM × elem_bytes` |
+| `bytes_stored` | `mss.rm`: `AME_NELEM × elem_bytes` |
+| `macs` | `mmulacc.2d`: $N^3$ |
+
+- `ame_stats_reset(&ame)` zera os contadores (também zerados por `ame_init`).
+- `ame_stats_report(&ame, stdout)` imprime os contadores, a intensidade aritmética (`macs / (bytes_loaded + bytes_stored)`) e o número de cargas de tile por `mmulacc.2d`.
+
+Para um GEMM com $M_t = M/N$, $K_t = K/N$, $P_t = P/N$ tiles, o kernel executa $M_t P_t (1 + 2K_t)$ `mls.rm`, $M_t P_t$ `mss.rm`, $M_t P_t K_t$ `mmulacc.2d` e $M_t P_t$ de cada `mmov`. Os contadores são exatos e determinísticos; não modelam ciclos nem latências.
+
+Os helpers de empacotamento (`ztt_tile_pack.h`) são usados apenas por testes e benchmarks.
