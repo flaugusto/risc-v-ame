@@ -1,0 +1,4 @@
+libztt.a
+test_ztt
+test_ztt_riscv
+*.o

@@ -251,34 +251,39 @@ Os arquivos `ztt_gemm.h` e `ztt_gemm.c` implementam os kernels de alto nível:
 - `ztt_sgemm(...)`: Multiplicação de matrizes em ponto flutuante FP32.
 - `ztt_igemm(...)`: Multiplicação de matrizes em inteiros Int32.
 
+### Layout de Memória (tile-major)
+`mls.rm` e `mss.rm` transferem um tile $N \times N$ a partir de um único endereço base, sem *stride*. Por isso os kernels recebem $A$, $B$ e $C$ em layout *block-tiled row-major* (Ztt v0.6, Seção 7.2.2): cada tile $N \times N$ é contíguo e row-major internamente, e a grade de tiles é row-major. $M$, $K$ e $P$ devem ser múltiplos de $N$; caso contrário o kernel retorna `AME_ERR_ILLEGAL_INSN`.
+
+O empacotamento, o preenchimento com zeros e o desempacotamento ficam fora do kernel (nos testes, `pack_tiles` / `unpack_tiles`). Quando os acessos com *stride* (`mls.st` / `mss.st`) forem implementados (Fase 2), esse empacotamento externo deixa de ser necessário.
+
 ### Algoritmo de Tiling ($M \times K \times P$)
 Dadas as matrizes $A [M \times K]$, $B [K \times P]$ e $C [M \times P]$, a multiplicação $C += A \times B$ é particionada em blocos de tamanho fixo $N \times N$:
 
 ```c
 for (int i = 0; i < M; i += N) {
     for (int j = 0; j < P; j += N) {
-        // 1. Zera o acumulador de hardware para o tile C[i, j]
-        ame_mzero_2d_acc(ame, acc0);
+        // 1. Carrega o tile C[i, j] no acumulador (acc0 = C[i, j])
+        ame_mls_rm(ame, m0, C_tile);
+        ame_mmov_a_m(ame, acc0, m0);
 
         for (int k = 0; k < K; k += N) {
-            // 2. Extrai e carrega os blocos A[i, k] e B[k, j] com mls.rm
-            ame_mls_rm(ame, m0, tile_A); // carrega em m0
-            ame_mls_rm(ame, m1, tile_B); // carrega em m1
+            // 2. Carrega os tiles A[i, k] e B[k, j] com mls.rm
+            ame_mls_rm(ame, m0, A_tile);
+            ame_mls_rm(ame, m1, B_tile);
 
-            // 3. Executa a multiplicação-acumulação: acc0 += m0 * m1
+            // 3. Multiplicação-acumulação: acc0 += m0 * m1
             ame_mmulacc_2d(ame, acc0, m0, m1);
+
+            A_tile += N*N;           // próximo tile à direita
+            B_tile += (P/N) * N*N;   // próximo tile abaixo
         }
 
-        // 4. Move o tile acumulado de volta para m0 e descarrega para a memória
+        // 4. Move o acumulador para m0 e grava o tile C[i, j]
         ame_mmov_m_a(ame, m0, acc0);
-        ame_mss_rm(ame, m0, tile_C);
-
-        // 5. Soma o resultado ao bloco de destino C[i..i+N, j..j+N]
+        ame_mss_rm(ame, m0, C_tile);
     }
 }
 ```
-
-- **Tratamento de Bordas**: Quando as dimensões $M, K, P$ não são múltiplos exatos de $N$, as funções realizam preenchimento com zeros (*zero-padding*) nas margens dos blocos temporários de entrada e acumulam apenas os elementos válidos na matriz de saída.
 
 ---
 

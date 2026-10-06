@@ -295,11 +295,69 @@ static bool test_single_tile_igemm(void)
 }
 
 /******************************************************************************
- * Test 7: Multi-Tile End-to-End SGEMM (M x K x P)
+ * Tile-major layout helpers (test-side packing for the GEMM kernels)
+ * The kernels consume padded matrices in block-tiled row-major layout: each
+ * N x N tile is contiguous and row-major, and the tile grid is row-major.
+ ******************************************************************************/
+static int round_up_to_tile(int x)
+{
+    return ((x + AME_N - 1) / AME_N) * AME_N;
+}
+
+/* Packs a rows x cols row-major matrix into a zero-padded tile-major buffer. */
+static void *pack_tiles(const void *src, int rows, int cols, size_t elem_size)
+{
+    const int N = AME_N;
+    const int prows = round_up_to_tile(rows);
+    const int pcols = round_up_to_tile(cols);
+    uint8_t *dst = (uint8_t *)calloc((size_t)prows * pcols, elem_size);
+    const uint8_t *in = (const uint8_t *)src;
+
+    for (int ti = 0; ti < prows / N; ++ti)
+    {
+        for (int tj = 0; tj < pcols / N; ++tj)
+        {
+            uint8_t *tile = dst + ((size_t)(ti * (pcols / N) + tj) * N * N) * elem_size;
+            for (int r = 0; r < N && ti * N + r < rows; ++r)
+            {
+                for (int c = 0; c < N && tj * N + c < cols; ++c)
+                {
+                    memcpy(tile + ((size_t)r * N + c) * elem_size,
+                           in + ((size_t)(ti * N + r) * cols + (tj * N + c)) * elem_size,
+                           elem_size);
+                }
+            }
+        }
+    }
+    return dst;
+}
+
+/* Extracts the rows x cols region of a tile-major buffer into a row-major matrix. */
+static void unpack_tiles(const void *packed, int rows, int cols, size_t elem_size, void *dst)
+{
+    const int N = AME_N;
+    const int pcols = round_up_to_tile(cols);
+    const uint8_t *in = (const uint8_t *)packed;
+    uint8_t *out = (uint8_t *)dst;
+
+    for (int i = 0; i < rows; ++i)
+    {
+        for (int j = 0; j < cols; ++j)
+        {
+            const uint8_t *tile = in + ((size_t)((i / N) * (pcols / N) + (j / N)) * N * N) * elem_size;
+            memcpy(out + ((size_t)i * cols + j) * elem_size,
+                   tile + ((size_t)(i % N) * N + (j % N)) * elem_size,
+                   elem_size);
+        }
+    }
+}
+
+/******************************************************************************
+ * Test 7: Multi-Tile End-to-End SGEMM, C += A * B (M x K x P not multiples of N)
  ******************************************************************************/
 static bool test_full_sgemm(void)
 {
-    printf(COLOR_BLUE "[RUN] test_full_sgemm (Multi-tile M=24, K=20, P=28)" COLOR_RESET "\n");
+    printf(COLOR_BLUE "[RUN] test_full_sgemm (Multi-tile M=24, K=20, P=28, C accumulated)" COLOR_RESET "\n");
     ame_state_t ame;
     ame_init(&ame);
     ame_acquire(&ame, NULL, 0);
@@ -310,62 +368,59 @@ static bool test_full_sgemm(void)
 
     float *A = (float *)malloc(M * K * sizeof(float));
     float *B = (float *)malloc(K * P * sizeof(float));
-    float *C_hw = (float *)calloc(M * P, sizeof(float));
-    float *C_ref = (float *)calloc(M * P, sizeof(float));
+    float *C0 = (float *)malloc(M * P * sizeof(float));
+    float *C_ref = (float *)malloc(M * P * sizeof(float));
+    float *C_hw = (float *)malloc(M * P * sizeof(float));
 
-    /* Populate matrices */
     for (int i = 0; i < M * K; ++i)
-    {
         A[i] = ((float)(rand() % 100) - 50.0f) / 10.0f;
-    }
     for (int i = 0; i < K * P; ++i)
-    {
         B[i] = ((float)(rand() % 100) - 50.0f) / 10.0f;
-    }
+    for (int i = 0; i < M * P; ++i)
+        C0[i] = ((float)(rand() % 100) - 50.0f) / 10.0f;
 
-    /* CPU Reference: C += A * B */
+    /* CPU reference: C = C0 + A * B */
     for (int i = 0; i < M; ++i)
     {
         for (int j = 0; j < P; ++j)
         {
-            float sum = 0.0f;
+            float sum = C0[i * P + j];
             for (int k = 0; k < K; ++k)
-            {
                 sum += A[i * K + k] * B[k * P + j];
-            }
             C_ref[i * P + j] = sum;
         }
     }
 
-    /* Ztt Accelerator GEMM */
-    ame_err_t err = ztt_sgemm(&ame, M, K, P, C_hw, A, B);
+    float *Ap = (float *)pack_tiles(A, M, K, sizeof(float));
+    float *Bp = (float *)pack_tiles(B, K, P, sizeof(float));
+    float *Cp = (float *)pack_tiles(C0, M, P, sizeof(float));
+
+    ame_err_t err = ztt_sgemm(&ame, round_up_to_tile(M), round_up_to_tile(K), round_up_to_tile(P), Cp, Ap, Bp);
     TEST_ASSERT(err == AME_OK, "ztt_sgemm failed");
 
-    /* Validate results */
+    unpack_tiles(Cp, M, P, sizeof(float), C_hw);
+
     float max_diff = 0.0f;
     for (int i = 0; i < M * P; ++i)
     {
         float diff = fabsf(C_hw[i] - C_ref[i]);
         if (diff > max_diff)
             max_diff = diff;
-        TEST_ASSERT(diff < 1e-4f, "Multi-tile SGEMM result differs from CPU reference");
+        TEST_ASSERT(diff < 1e-4f, "Multi-tile SGEMM result differs from CPU reference C0 + A*B");
     }
-
     printf("       Max diff: %e\n", max_diff);
 
-    free(A);
-    free(B);
-    free(C_hw);
-    free(C_ref);
+    free(A); free(B); free(C0); free(C_ref); free(C_hw);
+    free(Ap); free(Bp); free(Cp);
     return true;
 }
 
 /******************************************************************************
- * Test 8: Multi-Tile End-to-End IGEMM (M x K x P)
+ * Test 8: Multi-Tile End-to-End IGEMM, C += A * B (M x K x P not multiples of N)
  ******************************************************************************/
 static bool test_full_igemm(void)
 {
-    printf(COLOR_BLUE "[RUN] test_full_igemm (Multi-tile M=24, K=20, P=28)" COLOR_RESET "\n");
+    printf(COLOR_BLUE "[RUN] test_full_igemm (Multi-tile M=24, K=20, P=28, C accumulated)" COLOR_RESET "\n");
     ame_state_t ame;
     ame_init(&ame);
     ame_acquire(&ame, NULL, 0);
@@ -376,46 +431,71 @@ static bool test_full_igemm(void)
 
     int32_t *A = (int32_t *)malloc(M * K * sizeof(int32_t));
     int32_t *B = (int32_t *)malloc(K * P * sizeof(int32_t));
-    int32_t *C_hw = (int32_t *)calloc(M * P, sizeof(int32_t));
-    int32_t *C_ref = (int32_t *)calloc(M * P, sizeof(int32_t));
+    int32_t *C0 = (int32_t *)malloc(M * P * sizeof(int32_t));
+    int32_t *C_ref = (int32_t *)malloc(M * P * sizeof(int32_t));
+    int32_t *C_hw = (int32_t *)malloc(M * P * sizeof(int32_t));
 
     for (int i = 0; i < M * K; ++i)
-    {
         A[i] = (rand() % 20) - 10;
-    }
     for (int i = 0; i < K * P; ++i)
-    {
         B[i] = (rand() % 20) - 10;
-    }
+    for (int i = 0; i < M * P; ++i)
+        C0[i] = (rand() % 200) - 100;
 
-    /* CPU Reference */
     for (int i = 0; i < M; ++i)
     {
         for (int j = 0; j < P; ++j)
         {
-            int32_t sum = 0;
+            int32_t sum = C0[i * P + j];
             for (int k = 0; k < K; ++k)
-            {
                 sum += A[i * K + k] * B[k * P + j];
-            }
             C_ref[i * P + j] = sum;
         }
     }
 
-    /* Ztt Accelerator GEMM */
-    ame_err_t err = ztt_igemm(&ame, M, K, P, C_hw, A, B);
+    int32_t *Ap = (int32_t *)pack_tiles(A, M, K, sizeof(int32_t));
+    int32_t *Bp = (int32_t *)pack_tiles(B, K, P, sizeof(int32_t));
+    int32_t *Cp = (int32_t *)pack_tiles(C0, M, P, sizeof(int32_t));
+
+    ame_err_t err = ztt_igemm(&ame, round_up_to_tile(M), round_up_to_tile(K), round_up_to_tile(P), Cp, Ap, Bp);
     TEST_ASSERT(err == AME_OK, "ztt_igemm failed");
 
-    /* Exact integer match validation */
-    for (int i = 0; i < M * P; ++i)
-    {
-        TEST_ASSERT(C_hw[i] == C_ref[i], "Multi-tile IGEMM result differs from CPU reference");
-    }
+    unpack_tiles(Cp, M, P, sizeof(int32_t), C_hw);
 
-    free(A);
-    free(B);
-    free(C_hw);
-    free(C_ref);
+    for (int i = 0; i < M * P; ++i)
+        TEST_ASSERT(C_hw[i] == C_ref[i], "Multi-tile IGEMM result differs from CPU reference C0 + A*B");
+
+    free(A); free(B); free(C0); free(C_ref); free(C_hw);
+    free(Ap); free(Bp); free(Cp);
+    return true;
+}
+
+/******************************************************************************
+ * Test 8b: GEMM kernels reject dimensions that are not multiples of N
+ ******************************************************************************/
+static bool test_gemm_rejects_unpadded_dims(void)
+{
+    printf(COLOR_BLUE "[RUN] test_gemm_rejects_unpadded_dims" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    ame_acquire(&ame, NULL, 0);
+
+    const int N = AME_N;
+    const int bad = N + 1;
+    const int good = 2 * N;
+
+    float *fbuf = (float *)calloc((size_t)good * good * 4, sizeof(float));
+    int32_t *ibuf = (int32_t *)calloc((size_t)good * good * 4, sizeof(int32_t));
+
+    TEST_ASSERT(ztt_sgemm(&ame, bad, good, good, fbuf, fbuf, fbuf) == AME_ERR_ILLEGAL_INSN, "sgemm must reject M % N != 0");
+    TEST_ASSERT(ztt_sgemm(&ame, good, bad, good, fbuf, fbuf, fbuf) == AME_ERR_ILLEGAL_INSN, "sgemm must reject K % N != 0");
+    TEST_ASSERT(ztt_sgemm(&ame, good, good, bad, fbuf, fbuf, fbuf) == AME_ERR_ILLEGAL_INSN, "sgemm must reject P % N != 0");
+    TEST_ASSERT(ztt_igemm(&ame, bad, good, good, ibuf, ibuf, ibuf) == AME_ERR_ILLEGAL_INSN, "igemm must reject M % N != 0");
+    TEST_ASSERT(ztt_igemm(&ame, good, bad, good, ibuf, ibuf, ibuf) == AME_ERR_ILLEGAL_INSN, "igemm must reject K % N != 0");
+    TEST_ASSERT(ztt_igemm(&ame, good, good, bad, ibuf, ibuf, ibuf) == AME_ERR_ILLEGAL_INSN, "igemm must reject P % N != 0");
+
+    free(fbuf);
+    free(ibuf);
     return true;
 }
 
@@ -485,6 +565,7 @@ int main(void)
     run_test(test_single_tile_igemm, "Single-tile Int32 IGEMM");
     run_test(test_full_sgemm, "Multi-tile End-to-End SGEMM");
     run_test(test_full_igemm, "Multi-tile End-to-End IGEMM");
+    run_test(test_gemm_rejects_unpadded_dims, "GEMM rejects dimensions not multiple of N");
     run_test(test_register_aliases, "Register aliases m0, m1, acc0 functionality");
 
     printf("\n============================================================\n");
