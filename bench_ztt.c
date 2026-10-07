@@ -10,7 +10,7 @@
  * and prints direct comparison metrics. */
 static void run_shape_comparison(ame_state_t *ame, int M, int K, int P)
 {
-        const int Mp = round_up_to_tile(M);
+    const int Mp = round_up_to_tile(M);
     const int Kp = round_up_to_tile(K);
     const int Pp = round_up_to_tile(P);
 
@@ -19,7 +19,7 @@ static void run_shape_comparison(ame_state_t *ame, int M, int K, int P)
     float *B = (float *)calloc((size_t)Kp * Pp, sizeof(float));
     float *C = (float *)calloc((size_t)Mp * Pp, sizeof(float));
 
-    /* --- Approach 1: Software Tile-Major Packing (Phase 1) --- */
+    /* --- Approach 1: Software Tile-Major Packing --- */
     ztt_pack_stats_t host_p1 = {0};
     float *Ap = (float *)pack_tiles(A, M, K, sizeof(float), &host_p1);
     float *Bp = (float *)pack_tiles(B, K, P, sizeof(float), &host_p1);
@@ -34,9 +34,11 @@ static void run_shape_comparison(ame_state_t *ame, int M, int K, int P)
     const uint64_t host_bytes_p1 = host_p1.bytes_read + host_p1.bytes_written;
     const uint64_t total_bytes_p1 = ame_bytes_p1 + host_bytes_p1;
 
-    free(Ap); free(Bp); free(Cp);
+    free(Ap);
+    free(Bp);
+    free(Cp);
 
-    /* --- Approach 2: Direct In-Place Hardware Strided (Phase 2) --- */
+    /* --- Approach 2: Direct In-Place Hardware Strided --- */
     /* If dimensions are not multiples of N, hardware strided operates on padded buffer in-place */
     ame_stats_reset(ame);
     ztt_sgemm_strided(ame, Mp, Kp, Pp, C, A, B, Pp, Kp, Pp);
@@ -47,7 +49,7 @@ static void run_shape_comparison(ame_state_t *ame, int M, int K, int P)
     const uint64_t host_bytes_p2 = 0;
     const uint64_t total_bytes_p2 = ame_bytes_p2 + host_bytes_p2;
 
-        const double traffic_reduction = (1.0 - (double)total_bytes_p2 / (double)total_bytes_p1) * 100.0;
+    const double traffic_reduction = (1.0 - (double)total_bytes_p2 / (double)total_bytes_p1) * 100.0;
 
     printf("%4dx%4dx%4d | %8llu %10llu %10llu | %8llu %10llu %10llu | %10.1f%%\n",
            M, K, P,
@@ -59,13 +61,15 @@ static void run_shape_comparison(ame_state_t *ame, int M, int K, int P)
            (unsigned long long)host_bytes_p2,
            traffic_reduction);
 
-    free(A); free(B); free(C);
+    free(A);
+    free(B);
+    free(C);
 }
 
 int main(void)
 {
     const int N = AME_N;
-        ame_state_t ame;
+    ame_state_t ame;
     ame_init(&ame);
     ame_acquire(&ame, NULL, 0);
 
