@@ -75,6 +75,8 @@ void ame_stats_report(const ame_state_t *ame, FILE *out) {
 
     fprintf(out, "mls.rm:       %llu\n", (unsigned long long)st->mls_rm);
     fprintf(out, "mss.rm:       %llu\n", (unsigned long long)st->mss_rm);
+    fprintf(out, "mls.st:       %llu\n", (unsigned long long)st->mls_st);
+    fprintf(out, "mss.st:       %llu\n", (unsigned long long)st->mss_st);
     fprintf(out, "mmulacc.2d:   %llu\n", (unsigned long long)st->mmulacc_2d);
     fprintf(out, "mmov.m.a:     %llu\n", (unsigned long long)st->mmov_m_a);
     fprintf(out, "mmov.a.m:     %llu\n", (unsigned long long)st->mmov_a_m);
@@ -321,6 +323,84 @@ ame_err_t ame_mss_rm(ame_state_t *ame, uint32_t ms, void *base_addr) {
     return AME_OK;
 }
 
+
+/******************************************************************************
+ * 6.51 & 6.131 Strided Memory Transfer Instructions
+ ******************************************************************************/
+
+ame_err_t ame_mls_st(ame_state_t *ame, uint32_t md, const void *base_addr, size_t stride_bytes) {
+    ame_err_t err = check_active(ame);
+    if (err != AME_OK) return err;
+
+    if (md >= AME_NUM_M_REGS) {
+        return AME_ERR_ILLEGAL_INSN;
+    }
+
+    uint32_t dtype = ame->Md[md];
+    uint32_t group_size = ame_get_group_size(dtype);
+    if ((md % group_size != 0) || (md + group_size > AME_NUM_M_REGS)) {
+        return AME_ERR_ILLEGAL_INSN;
+    }
+
+    int elem_bytes = ame_dtype_element_size_bytes(dtype);
+    if (elem_bytes == 0) elem_bytes = 1;
+
+    /* Base address natural alignment check (Section 2.6) */
+    if (((uintptr_t)base_addr % (uintptr_t)elem_bytes) != 0) {
+        return AME_ERR_MISALIGNED;
+    }
+
+    const int N = AME_N;
+    size_t seg_bytes = (size_t)N * elem_bytes;
+    const uint8_t *src_seg = (const uint8_t *)base_addr;
+    uint8_t *dst_reg = ame->M[md];
+
+    for (int r = 0; r < N; ++r) {
+        memcpy(dst_reg + (size_t)r * seg_bytes, src_seg + (size_t)r * stride_bytes, seg_bytes);
+    }
+
+    size_t total_bytes = (size_t)AME_NELEM * elem_bytes;
+    ame->stats.mls_st++;
+    ame->stats.bytes_loaded += total_bytes;
+    return AME_OK;
+}
+
+ame_err_t ame_mss_st(ame_state_t *ame, uint32_t ms, void *base_addr, size_t stride_bytes) {
+    ame_err_t err = check_active(ame);
+    if (err != AME_OK) return err;
+
+    if (ms >= AME_NUM_M_REGS) {
+        return AME_ERR_ILLEGAL_INSN;
+    }
+
+    uint32_t dtype = ame->Md[ms];
+    uint32_t group_size = ame_get_group_size(dtype);
+    if ((ms % group_size != 0) || (ms + group_size > AME_NUM_M_REGS)) {
+        return AME_ERR_ILLEGAL_INSN;
+    }
+
+    int elem_bytes = ame_dtype_element_size_bytes(dtype);
+    if (elem_bytes == 0) elem_bytes = 1;
+
+    /* Base address natural alignment check */
+    if (((uintptr_t)base_addr % (uintptr_t)elem_bytes) != 0) {
+        return AME_ERR_MISALIGNED;
+    }
+
+    const int N = AME_N;
+    size_t seg_bytes = (size_t)N * elem_bytes;
+    uint8_t *dst_seg = (uint8_t *)base_addr;
+    const uint8_t *src_reg = ame->M[ms];
+
+    for (int r = 0; r < N; ++r) {
+        memcpy(dst_seg + (size_t)r * stride_bytes, src_reg + (size_t)r * seg_bytes, seg_bytes);
+    }
+
+    size_t total_bytes = (size_t)AME_NELEM * elem_bytes;
+    ame->stats.mss_st++;
+    ame->stats.bytes_stored += total_bytes;
+    return AME_OK;
+}
 /******************************************************************************
  * 6.59 & 6.60 Accumulator / Matrix Moves
  ******************************************************************************/

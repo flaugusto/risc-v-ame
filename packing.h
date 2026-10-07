@@ -1,5 +1,5 @@
-#ifndef ZTT_TILE_PACK_H
-#define ZTT_TILE_PACK_H
+#ifndef PACKING_H
+#define PACKING_H
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -14,7 +14,8 @@
  ******************************************************************************/
 
 /* Host-side memory traffic of packing and unpacking, accumulated across calls. */
-typedef struct {
+typedef struct
+{
     uint64_t bytes_read;
     uint64_t bytes_written;
 } ztt_pack_stats_t;
@@ -36,7 +37,8 @@ static inline void *pack_tiles(const void *src, int rows, int cols, size_t elem_
     uint8_t *dst = (uint8_t *)calloc((size_t)prows * pcols, elem_size);
     const uint8_t *in = (const uint8_t *)src;
 
-    if (stats) {
+    if (stats)
+    {
         stats->bytes_read += (uint64_t)rows * cols * elem_size;
         stats->bytes_written += (uint64_t)prows * pcols * elem_size;
     }
@@ -70,7 +72,8 @@ static inline void unpack_tiles(const void *packed, int rows, int cols, size_t e
     const uint8_t *in = (const uint8_t *)packed;
     uint8_t *out = (uint8_t *)dst;
 
-    if (stats) {
+    if (stats)
+    {
         stats->bytes_read += (uint64_t)rows * cols * elem_size;
         stats->bytes_written += (uint64_t)rows * cols * elem_size;
     }
@@ -87,5 +90,4 @@ static inline void unpack_tiles(const void *packed, int rows, int cols, size_t e
     }
 }
 
-
-#endif /* ZTT_TILE_PACK_H */
+#endif /* PACKING_H */

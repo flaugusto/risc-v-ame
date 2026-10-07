@@ -3,6 +3,19 @@
 
 #include "ztt_ame.h"
 
+
+/* FP32 Strided GEMM (operates directly on row-major matrices, no software packing) */
+ame_err_t ztt_sgemm_strided(ame_state_t *ame,
+                            int M, int K, int P,
+                            float *C, const float *A, const float *B,
+                            size_t ldc, size_t lda, size_t ldb);
+
+/* Int32 Strided GEMM (operates directly on row-major matrices, no software packing) */
+ame_err_t ztt_igemm_strided(ame_state_t *ame,
+                            int M, int K, int P,
+                            int32_t *C, const int32_t *A, const int32_t *B,
+                            size_t ldc, size_t lda, size_t ldb);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

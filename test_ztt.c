@@ -5,7 +5,7 @@
 #include <assert.h>
 #include "ztt_ame.h"
 #include "ztt_gemm.h"
-#include "ztt_tile_pack.h"
+#include "packing.h"
 
 #define COLOR_GREEN "\033[0;32m"
 #define COLOR_RED "\033[0;31m"
@@ -141,6 +141,71 @@ static bool test_memory_roundtrip(void)
         TEST_ASSERT(src_tile[i] == dst_tile[i], "Memory round-trip data mismatch");
     }
 
+    return true;
+}
+
+/******************************************************************************
+ * Test 3b: Strided Memory Load and Store Round-Trip (mls.st / mss.st)
+ ******************************************************************************/
+static bool test_strided_memory_roundtrip(void)
+{
+    printf(COLOR_BLUE "[RUN] test_strided_memory_roundtrip" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    ame_acquire(&ame, NULL, 0);
+
+    ame_msettyp(&ame, m2, AME_DTYPE_FP32);
+
+    const int N = AME_N;
+    const int stride_elements = 2 * N + 5; /* non-contiguous stride */
+    const size_t byte_stride = (size_t)stride_elements * sizeof(float);
+
+    float *src_matrix = (float *)calloc((size_t)N * stride_elements, sizeof(float));
+    float *dst_matrix = (float *)calloc((size_t)N * stride_elements, sizeof(float));
+
+    /* Initialize distinct values in the N x N region embedded in the strided buffer */
+    for (int r = 0; r < N; ++r)
+    {
+        for (int c = 0; c < N; ++c)
+        {
+            src_matrix[r * stride_elements + c] = (float)(r * 100 + c + 1);
+        }
+    }
+
+    /* mls.st m2, (src_matrix), byte_stride */
+    ame_err_t err = ame_mls_st(&ame, m2, src_matrix, byte_stride);
+    TEST_ASSERT(err == AME_OK, "mls.st failed");
+
+    /* mss.st m2, (dst_matrix), byte_stride */
+    err = ame_mss_st(&ame, m2, dst_matrix, byte_stride);
+    TEST_ASSERT(err == AME_OK, "mss.st failed");
+
+    /* Verify that N x N elements were correctly stored back with stride */
+    for (int r = 0; r < N; ++r)
+    {
+        for (int c = 0; c < N; ++c)
+        {
+            TEST_ASSERT(dst_matrix[r * stride_elements + c] == src_matrix[r * stride_elements + c],
+                        "Strided round-trip data mismatch in N x N region");
+        }
+        /* Verify elements outside N columns remained zero */
+        for (int c = N; c < stride_elements; ++c)
+        {
+            TEST_ASSERT(dst_matrix[r * stride_elements + c] == 0.0f,
+                        "Elements outside tile row segment must not be overwritten");
+        }
+    }
+
+    /* Check misaligned base address fails */
+    char *misaligned_ptr = ((char *)src_matrix) + 1;
+    err = ame_mls_st(&ame, m2, misaligned_ptr, byte_stride);
+    TEST_ASSERT(err == AME_ERR_MISALIGNED, "mls.st with misaligned base must fail with AME_ERR_MISALIGNED");
+
+    err = ame_mss_st(&ame, m2, misaligned_ptr, byte_stride);
+    TEST_ASSERT(err == AME_ERR_MISALIGNED, "mss.st with misaligned base must fail with AME_ERR_MISALIGNED");
+
+    free(src_matrix);
+    free(dst_matrix);
     return true;
 }
 
@@ -426,6 +491,89 @@ static bool test_full_igemm(void)
 }
 
 /******************************************************************************
+ * Test 8c: Multi-Tile Strided SGEMM & IGEMM (Zero Host Packing)
+ ******************************************************************************/
+static bool test_full_strided_gemm(void)
+{
+    printf(COLOR_BLUE "[RUN] test_full_strided_gemm (Multi-tile SGEMM & IGEMM with mls.st/mss.st)" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    ame_acquire(&ame, NULL, 0);
+
+    const int N = AME_N;
+    const int M = 2 * N;
+    const int K = 3 * N;
+    const int P = 2 * N;
+
+    /* Leading dimensions with extra padding to test arbitrary row strides */
+    const size_t lda = K + 7;
+    const size_t ldb = P + 5;
+    const size_t ldc = P + 3;
+
+    /* Allocate and initialize FP32 matrices */
+    float *A = (float *)calloc((size_t)M * lda, sizeof(float));
+    float *B = (float *)calloc((size_t)K * ldb, sizeof(float));
+    float *C0 = (float *)calloc((size_t)M * ldc, sizeof(float));
+    float *C_hw = (float *)calloc((size_t)M * ldc, sizeof(float));
+    float *C_ref = (float *)calloc((size_t)M * ldc, sizeof(float));
+
+    for (int i = 0; i < M; ++i)
+        for (int k = 0; k < K; ++k)
+            A[i * lda + k] = ((float)(rand() % 100) - 50.0f) / 10.0f;
+
+    for (int k = 0; k < K; ++k)
+        for (int j = 0; j < P; ++j)
+            B[k * ldb + j] = ((float)(rand() % 100) - 50.0f) / 10.0f;
+
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < P; ++j)
+        {
+            float val = ((float)(rand() % 100) - 50.0f) / 10.0f;
+            C0[i * ldc + j] = val;
+            C_hw[i * ldc + j] = val;
+        }
+
+    /* CPU reference: C += A * B */
+    for (int i = 0; i < M; ++i)
+    {
+        for (int j = 0; j < P; ++j)
+        {
+            float sum = C0[i * ldc + j];
+            for (int k = 0; k < K; ++k)
+                sum += A[i * lda + k] * B[k * ldb + j];
+            C_ref[i * ldc + j] = sum;
+        }
+    }
+
+    ame_stats_reset(&ame);
+    ame_err_t err = ztt_sgemm_strided(&ame, M, K, P, C_hw, A, B, ldc, lda, ldb);
+    TEST_ASSERT(err == AME_OK, "ztt_sgemm_strided failed");
+
+    /* Validate numerical accuracy */
+    float max_diff = 0.0f;
+    for (int i = 0; i < M; ++i)
+    {
+        for (int j = 0; j < P; ++j)
+        {
+            float diff = fabsf(C_hw[i * ldc + j] - C_ref[i * ldc + j]);
+            if (diff > max_diff)
+                max_diff = diff;
+            TEST_ASSERT(diff < 1e-4f, "ztt_sgemm_strided mismatch with CPU reference");
+        }
+    }
+
+    /* Verify stats: all loads/stores were strided (.st), zero row-major (.rm) */
+    TEST_ASSERT(ame.stats.mls_rm == 0 && ame.stats.mss_rm == 0, "Strided GEMM must not use mls.rm/mss.rm");
+    const unsigned long long Mt = M / N, Kt = K / N, Pt = P / N;
+    TEST_ASSERT(ame.stats.mls_st == Mt * Pt * (1 + 2 * Kt), "mls.st count mismatch");
+    TEST_ASSERT(ame.stats.mss_st == Mt * Pt, "mss.st count mismatch");
+    TEST_ASSERT(ame.stats.mmulacc_2d == Mt * Pt * Kt, "mmulacc.2d count mismatch");
+
+    free(A); free(B); free(C0); free(C_hw); free(C_ref);
+    return true;
+}
+
+/******************************************************************************
  * Test 8b: GEMM kernels reject dimensions that are not multiples of N
  ******************************************************************************/
 static bool test_gemm_rejects_unpadded_dims(void)
@@ -473,8 +621,8 @@ static bool check_gemm_stats(ame_state_t *ame, bool use_float, int M, int K, int
     ame_stats_reset(ame);
 
     ame_err_t err = use_float
-        ? ztt_sgemm(ame, M, K, P, fC, fA, fB)
-        : ztt_igemm(ame, M, K, P, (int32_t *)fC, (const int32_t *)fA, (const int32_t *)fB);
+                        ? ztt_sgemm(ame, M, K, P, fC, fA, fB)
+                        : ztt_igemm(ame, M, K, P, (int32_t *)fC, (const int32_t *)fA, (const int32_t *)fB);
     free(fA);
     free(fB);
     free(fC);
@@ -550,8 +698,8 @@ static bool test_stats_reset(void)
     ame_stats_reset(&ame);
     const ame_stats_t *st = &ame.stats;
     TEST_ASSERT(st->mls_rm == 0 && st->mss_rm == 0 && st->mmulacc_2d == 0 &&
-                st->mmov_m_a == 0 && st->mmov_a_m == 0 &&
-                st->bytes_loaded == 0 && st->bytes_stored == 0 && st->macs == 0,
+                    st->mmov_m_a == 0 && st->mmov_a_m == 0 &&
+                    st->bytes_loaded == 0 && st->bytes_stored == 0 && st->macs == 0,
                 "all counters must be zero after reset");
     return true;
 }
@@ -724,11 +872,13 @@ int main(void)
     run_test(test_ownership, "Ownership and backend access control");
     run_test(test_datatypes_and_zeroing, "Datatype descriptors and register zeroing");
     run_test(test_memory_roundtrip, "Row-major memory load/store roundtrip");
+    run_test(test_strided_memory_roundtrip, "Strided memory load/store roundtrip");
     run_test(test_type_mismatch, "Datatype mismatch & amestatus.UN flag");
     run_test(test_single_tile_sgemm, "Single-tile FP32 SGEMM");
     run_test(test_single_tile_igemm, "Single-tile Int32 IGEMM");
     run_test(test_full_sgemm, "Multi-tile End-to-End SGEMM");
     run_test(test_full_igemm, "Multi-tile End-to-End IGEMM");
+    run_test(test_full_strided_gemm, "Multi-tile Strided SGEMM (mls.st/mss.st)");
     run_test(test_gemm_rejects_unpadded_dims, "GEMM rejects dimensions not multiple of N");
     run_test(test_gemm_stats_counts, "GEMM instruction and traffic counts");
     run_test(test_stats_ignore_failed_instructions, "Failed instructions are not counted");
