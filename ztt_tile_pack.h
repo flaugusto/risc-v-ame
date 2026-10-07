@@ -13,19 +13,33 @@
  * Used by tests and benchmarks; not part of the kernel library.
  ******************************************************************************/
 
+/* Host-side memory traffic of packing and unpacking, accumulated across calls. */
+typedef struct {
+    uint64_t bytes_read;
+    uint64_t bytes_written;
+} ztt_pack_stats_t;
+
 static inline int round_up_to_tile(int x)
 {
     return ((x + AME_N - 1) / AME_N) * AME_N;
 }
 
-/* Packs a rows x cols row-major matrix into a zero-padded tile-major buffer. */
-static inline void *pack_tiles(const void *src, int rows, int cols, size_t elem_size)
+/* Packs a rows x cols row-major matrix into a zero-padded tile-major buffer.
+ * stats may be NULL. Reads count the logical elements; writes count the whole
+ * padded buffer, including the zero fill. */
+static inline void *pack_tiles(const void *src, int rows, int cols, size_t elem_size,
+                               ztt_pack_stats_t *stats)
 {
     const int N = AME_N;
     const int prows = round_up_to_tile(rows);
     const int pcols = round_up_to_tile(cols);
     uint8_t *dst = (uint8_t *)calloc((size_t)prows * pcols, elem_size);
     const uint8_t *in = (const uint8_t *)src;
+
+    if (stats) {
+        stats->bytes_read += (uint64_t)rows * cols * elem_size;
+        stats->bytes_written += (uint64_t)prows * pcols * elem_size;
+    }
 
     for (int ti = 0; ti < prows / N; ++ti)
     {
@@ -46,13 +60,20 @@ static inline void *pack_tiles(const void *src, int rows, int cols, size_t elem_
     return dst;
 }
 
-/* Extracts the rows x cols region of a tile-major buffer into a row-major matrix. */
-static inline void unpack_tiles(const void *packed, int rows, int cols, size_t elem_size, void *dst)
+/* Extracts the rows x cols region of a tile-major buffer into a row-major matrix.
+ * stats may be NULL. */
+static inline void unpack_tiles(const void *packed, int rows, int cols, size_t elem_size, void *dst,
+                                ztt_pack_stats_t *stats)
 {
     const int N = AME_N;
     const int pcols = round_up_to_tile(cols);
     const uint8_t *in = (const uint8_t *)packed;
     uint8_t *out = (uint8_t *)dst;
+
+    if (stats) {
+        stats->bytes_read += (uint64_t)rows * cols * elem_size;
+        stats->bytes_written += (uint64_t)rows * cols * elem_size;
+    }
 
     for (int i = 0; i < rows; ++i)
     {

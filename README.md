@@ -301,7 +301,9 @@ make test
 ```bash
 make bench
 ```
-Executa `ztt_sgemm` para várias formas de matriz e imprime uma tabela com as contagens de instruções, MACs, intensidade aritmética e a fração de MACs úteis (sem *padding*).
+Executa `ztt_sgemm` para várias formas de matriz e imprime uma tabela com as contagens de instruções, MACs, intensidade aritmética, a fração de MACs úteis (sem *padding*) e o tráfego de memória do lado do host (empacotamento).
+
+Colunas do lado do host: `host B` (bytes lidos e escritos por `pack_tiles` de A, B e C e por `unpack_tiles` de C), `host/AME` (`host B` dividido pelos bytes de `mls.rm` e `mss.rm`) e `host B/MAC` (`host B` por MAC útil).
 
 ### Configuração Dinâmica da Dimensão do Tile ($N$)
 É possível compilar o simulador com qualquer dimensão válida para `AME_NELEM` via flag `CFLAGS`:
@@ -359,6 +361,8 @@ O arquivo `test_ztt.c` contém testes unitários e de integração que validam c
     - Valida que instruções rejeitadas (sem posse, tipos incompatíveis) não alteram os contadores.
 11. **`test_stats_reset`** e **`test_stats_report`**:
     - Validam `ame_stats_reset` e que `ame_stats_report` imprime os valores dos contadores e as métricas derivadas.
+12. **`test_pack_stats_unaligned`**, **`test_pack_stats_aligned`**, **`test_unpack_stats`** e **`test_pack_stats_accumulate`**:
+    - Validam os bytes lidos e escritos por `pack_tiles` e `unpack_tiles` (com e sem *padding*) e o acúmulo entre chamadas.
 
 ---
 
@@ -378,4 +382,10 @@ O arquivo `test_ztt.c` contém testes unitários e de integração que validam c
 
 Para um GEMM com $M_t = M/N$, $K_t = K/N$, $P_t = P/N$ tiles, o kernel executa $M_t P_t (1 + 2K_t)$ `mls.rm`, $M_t P_t$ `mss.rm`, $M_t P_t K_t$ `mmulacc.2d` e $M_t P_t$ de cada `mmov`. Os contadores são exatos e determinísticos; não modelam ciclos nem latências.
 
-Os helpers de empacotamento (`ztt_tile_pack.h`) são usados apenas por testes e benchmarks.
+### Tráfego do lado do host
+
+Os helpers de empacotamento (`ztt_tile_pack.h`) são usados apenas por testes e benchmarks. `pack_tiles` e `unpack_tiles` recebem um `ztt_pack_stats_t *` opcional (`NULL` desativa a contagem), que acumula entre chamadas:
+- `pack_tiles`: `bytes_read` conta apenas os elementos lógicos (`rows × cols`); `bytes_written` conta o buffer inteiro com *padding*, incluindo o preenchimento com zeros.
+- `unpack_tiles`: `bytes_read` e `bytes_written` contam os elementos lógicos.
+
+É uma contagem de bytes, não de tempo: assume que o empacotamento é limitado pela memória.

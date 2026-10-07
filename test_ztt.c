@@ -334,14 +334,14 @@ static bool test_full_sgemm(void)
         }
     }
 
-    float *Ap = (float *)pack_tiles(A, M, K, sizeof(float));
-    float *Bp = (float *)pack_tiles(B, K, P, sizeof(float));
-    float *Cp = (float *)pack_tiles(C0, M, P, sizeof(float));
+    float *Ap = (float *)pack_tiles(A, M, K, sizeof(float), NULL);
+    float *Bp = (float *)pack_tiles(B, K, P, sizeof(float), NULL);
+    float *Cp = (float *)pack_tiles(C0, M, P, sizeof(float), NULL);
 
     ame_err_t err = ztt_sgemm(&ame, round_up_to_tile(M), round_up_to_tile(K), round_up_to_tile(P), Cp, Ap, Bp);
     TEST_ASSERT(err == AME_OK, "ztt_sgemm failed");
 
-    unpack_tiles(Cp, M, P, sizeof(float), C_hw);
+    unpack_tiles(Cp, M, P, sizeof(float), C_hw, NULL);
 
     float max_diff = 0.0f;
     for (int i = 0; i < M * P; ++i)
@@ -402,14 +402,14 @@ static bool test_full_igemm(void)
         }
     }
 
-    int32_t *Ap = (int32_t *)pack_tiles(A, M, K, sizeof(int32_t));
-    int32_t *Bp = (int32_t *)pack_tiles(B, K, P, sizeof(int32_t));
-    int32_t *Cp = (int32_t *)pack_tiles(C0, M, P, sizeof(int32_t));
+    int32_t *Ap = (int32_t *)pack_tiles(A, M, K, sizeof(int32_t), NULL);
+    int32_t *Bp = (int32_t *)pack_tiles(B, K, P, sizeof(int32_t), NULL);
+    int32_t *Cp = (int32_t *)pack_tiles(C0, M, P, sizeof(int32_t), NULL);
 
     ame_err_t err = ztt_igemm(&ame, round_up_to_tile(M), round_up_to_tile(K), round_up_to_tile(P), Cp, Ap, Bp);
     TEST_ASSERT(err == AME_OK, "ztt_igemm failed");
 
-    unpack_tiles(Cp, M, P, sizeof(int32_t), C_hw);
+    unpack_tiles(Cp, M, P, sizeof(int32_t), C_hw, NULL);
 
     for (int i = 0; i < M * P; ++i)
         TEST_ASSERT(C_hw[i] == C_ref[i], "Multi-tile IGEMM result differs from CPU reference C0 + A*B");
@@ -590,6 +590,80 @@ static bool test_stats_report(void)
 }
 
 /******************************************************************************
+ * Host-side packing statistics
+ ******************************************************************************/
+static bool test_pack_stats_unaligned(void)
+{
+    printf(COLOR_BLUE "[RUN] test_pack_stats_unaligned" COLOR_RESET "\n");
+    const int N = AME_N;
+    const int rows = N + 1, cols = N;
+    float *src = (float *)calloc((size_t)rows * cols, sizeof(float));
+    ztt_pack_stats_t st = {0};
+
+    void *packed = pack_tiles(src, rows, cols, sizeof(float), &st);
+    TEST_ASSERT(st.bytes_read == (uint64_t)rows * cols * sizeof(float), "pack must read only the logical elements");
+    TEST_ASSERT(st.bytes_written == (uint64_t)(2 * N) * N * sizeof(float), "pack must write the full padded buffer");
+
+    free(packed);
+    free(src);
+    return true;
+}
+
+static bool test_pack_stats_aligned(void)
+{
+    printf(COLOR_BLUE "[RUN] test_pack_stats_aligned" COLOR_RESET "\n");
+    const int N = AME_N;
+    const int rows = 2 * N, cols = 3 * N;
+    int32_t *src = (int32_t *)calloc((size_t)rows * cols, sizeof(int32_t));
+    ztt_pack_stats_t st = {0};
+
+    void *packed = pack_tiles(src, rows, cols, sizeof(int32_t), &st);
+    TEST_ASSERT(st.bytes_read == (uint64_t)rows * cols * sizeof(int32_t), "pack read bytes mismatch");
+    TEST_ASSERT(st.bytes_written == st.bytes_read, "aligned pack must write exactly what it reads");
+
+    free(packed);
+    free(src);
+    return true;
+}
+
+static bool test_unpack_stats(void)
+{
+    printf(COLOR_BLUE "[RUN] test_unpack_stats" COLOR_RESET "\n");
+    const int N = AME_N;
+    const int rows = N + 1, cols = N + 2;
+    float *src = (float *)calloc((size_t)rows * cols, sizeof(float));
+    float *dst = (float *)calloc((size_t)rows * cols, sizeof(float));
+    void *packed = pack_tiles(src, rows, cols, sizeof(float), NULL);
+
+    ztt_pack_stats_t st = {0};
+    unpack_tiles(packed, rows, cols, sizeof(float), dst, &st);
+    TEST_ASSERT(st.bytes_read == (uint64_t)rows * cols * sizeof(float), "unpack must read only the logical elements");
+    TEST_ASSERT(st.bytes_written == st.bytes_read, "unpack must write the logical elements");
+
+    free(packed);
+    free(src);
+    free(dst);
+    return true;
+}
+
+static bool test_pack_stats_accumulate(void)
+{
+    printf(COLOR_BLUE "[RUN] test_pack_stats_accumulate" COLOR_RESET "\n");
+    const int N = AME_N;
+    float *src = (float *)calloc((size_t)N * N, sizeof(float));
+    ztt_pack_stats_t st = {0};
+
+    free(pack_tiles(src, N, N, sizeof(float), &st));
+    free(pack_tiles(src, N, N, sizeof(float), &st));
+    const uint64_t one_call = (uint64_t)N * N * sizeof(float);
+    TEST_ASSERT(st.bytes_read == 2 * one_call, "stats must accumulate across calls (read)");
+    TEST_ASSERT(st.bytes_written == 2 * one_call, "stats must accumulate across calls (written)");
+
+    free(src);
+    return true;
+}
+
+/******************************************************************************
  * Test 9: Register Aliases Readability & Functionality
  ******************************************************************************/
 static bool test_register_aliases(void)
@@ -660,6 +734,10 @@ int main(void)
     run_test(test_stats_ignore_failed_instructions, "Failed instructions are not counted");
     run_test(test_stats_reset, "Statistics reset");
     run_test(test_stats_report, "Statistics report");
+    run_test(test_pack_stats_unaligned, "Pack statistics, padded shape");
+    run_test(test_pack_stats_aligned, "Pack statistics, aligned shape");
+    run_test(test_unpack_stats, "Unpack statistics");
+    run_test(test_pack_stats_accumulate, "Pack statistics accumulate across calls");
     run_test(test_register_aliases, "Register aliases m0, m1, acc0 functionality");
 
     printf("\n============================================================\n");
