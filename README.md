@@ -4,6 +4,8 @@ Este diretório contém a implementação em C do mini-simulador da extensão de
 
 O objetivo deste componente é modelar fielmente a arquitetura, o banco de registradores, os registradores de controle e status (CSRs), os descritores de tipo de dados e as instruções do núcleo computacional da especificação oficial **Ztt v0.6**, com foco inicial na execução de multiplicação geral de matrizes (**GEMM**).
 
+> **English API Reference**: For a comprehensive English (en-US) reference covering simulator instruction semantics, parameters, return codes, and a kernel development tutorial, see [API_REFERENCE.md](API_REFERENCE.md).
+
 ---
 
 ## Sumário

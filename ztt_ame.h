@@ -14,12 +14,17 @@ extern "C"
 /******************************************************************************
  * Hardware Parameters (Ztt v0.6 Chapter 4)
  ******************************************************************************/
+#if defined(AME_N) && !defined(AME_NELEM)
+#define AME_NELEM ((AME_N) * (AME_N))
+#endif
+
 #ifndef AME_NELEM
 /* Number of elements in an AME logical square (power of 4) */
-#define AME_NELEM 256
+#define AME_NELEM 64
 #endif
 
 /* Tile side length: N = sqrt(AME_NELEM) (power of 2) */
+#ifndef AME_N
 #if AME_NELEM == 16
 #define AME_N 4
 #elif AME_NELEM == 64
@@ -34,6 +39,7 @@ extern "C"
 #define AME_N 128
 #else
 #error "AME_NELEM must be a recognized power of 4 (16, 64, 256, 1024, 4096, 16384)"
+#endif
 #endif
 
 /* Number of general matrix registers M0..M[AME_NUM_M_REGS-1] (16 or 32) */
@@ -237,7 +243,7 @@ extern "C"
         /* Hart processor state */
         ame_ms_state_t ms_status; /* mstatus.MS field */
 
-        /* Instruction and traffic counters (not architectural state) */
+        /* Simulator-only performance monitoring counters (not official architectural state) */
         ame_stats_t stats;
     } ame_state_t;
 
