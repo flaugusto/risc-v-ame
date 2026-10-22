@@ -845,6 +845,125 @@ static bool test_register_aliases(void)
 }
 
 /******************************************************************************
+ * Test 14: Multi-Register Strided Kernels (2x4, 4x4, and Double-Buffering)
+ ******************************************************************************/
+static bool test_multi_register_gemm(void)
+{
+    printf(COLOR_BLUE "[RUN] test_multi_register_gemm (2x4, 4x4 and Double-Buffering variants)" COLOR_RESET "\n");
+    ame_state_t ame;
+    ame_init(&ame);
+    ame_acquire(&ame, NULL, 0);
+
+    const int N = AME_N;
+    /* Dimensions multiple of 4*N to accommodate 1x1, 2x4, and 4x4 cleanly */
+    const int M = 4 * N;
+    const int K = 4 * N;
+    const int P = 4 * N;
+
+    const size_t lda = K + 2;
+    const size_t ldb = P + 4;
+    const size_t ldc = P + 1;
+
+    float *A = (float *)calloc((size_t)M * lda, sizeof(float));
+    float *B = (float *)calloc((size_t)K * ldb, sizeof(float));
+    float *C0 = (float *)calloc((size_t)M * ldc, sizeof(float));
+    float *C_ref = (float *)calloc((size_t)M * ldc, sizeof(float));
+    float *C_test = (float *)calloc((size_t)M * ldc, sizeof(float));
+
+    for (int i = 0; i < M; ++i)
+        for (int k = 0; k < K; ++k)
+            A[i * lda + k] = ((float)(rand() % 100) - 50.0f) / 10.0f;
+
+    for (int k = 0; k < K; ++k)
+        for (int j = 0; j < P; ++j)
+            B[k * ldb + j] = ((float)(rand() % 100) - 50.0f) / 10.0f;
+
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < P; ++j)
+            C0[i * ldc + j] = ((float)(rand() % 100) - 50.0f) / 10.0f;
+
+    /* Ground truth C_ref += A * B */
+    for (int i = 0; i < M; ++i)
+    {
+        for (int j = 0; j < P; ++j)
+        {
+            float sum = C0[i * ldc + j];
+            for (int k = 0; k < K; ++k)
+                sum += A[i * lda + k] * B[k * ldb + j];
+            C_ref[i * ldc + j] = sum;
+        }
+    }
+
+    const uint64_t Mt = M / N, Kt = K / N, Pt = P / N;
+    const uint64_t expected_macs = Mt * Kt * Pt;
+
+    /* 1. Test 2x4 without prefetch */
+    memcpy(C_test, C0, (size_t)M * ldc * sizeof(float));
+    ame_stats_reset(&ame);
+    ame_err_t err = ztt_sgemm_strided_2x4(&ame, M, K, P, C_test, A, B, ldc, lda, ldb);
+    TEST_ASSERT(err == AME_OK, "ztt_sgemm_strided_2x4 failed");
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < P; ++j)
+            TEST_ASSERT(fabsf(C_test[i * ldc + j] - C_ref[i * ldc + j]) < 1e-4f, "2x4 numerical mismatch");
+    TEST_ASSERT(ame.stats.mmulacc_2d == expected_macs, "2x4 MAC count mismatch");
+    /* In 2x4: C is loaded Mt*Pt times. A is loaded (Mt/2)*Pt*Kt*2 = Mt*Pt*Kt.
+       B is loaded Mt*(Pt/4)*Kt*4 = Mt*Pt*Kt. Total loads: Mt*Pt + (1/4 + 1/2)*Mt*Pt*Kt*something.
+       More precisely: outer loop Mt/2 * Pt/4.
+       Per (i,j) block of 2x4 tiles: 2*4 = 8 C loads.
+       Inner loop k (Kt times): 2 loads for A, 4 loads for B -> (2+4)*Kt = 6*Kt loads.
+       Total mls_st = (Mt/2) * (Pt/4) * (8 + 6 * Kt). */
+    const uint64_t expected_loads_2x4 = (Mt / 2) * (Pt / 4) * (8 + 6 * Kt);
+    TEST_ASSERT(ame.stats.mls_st == expected_loads_2x4, "2x4 mls.st load count mismatch");
+
+    /* 2. Test 2x4 with double buffering (prefetch) */
+    memcpy(C_test, C0, (size_t)M * ldc * sizeof(float));
+    ame_stats_reset(&ame);
+    err = ztt_sgemm_strided_2x4_db(&ame, M, K, P, C_test, A, B, ldc, lda, ldb);
+    TEST_ASSERT(err == AME_OK, "ztt_sgemm_strided_2x4_db failed");
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < P; ++j)
+            TEST_ASSERT(fabsf(C_test[i * ldc + j] - C_ref[i * ldc + j]) < 1e-4f, "2x4_db numerical mismatch");
+    TEST_ASSERT(ame.stats.mmulacc_2d == expected_macs, "2x4_db MAC count mismatch");
+    TEST_ASSERT(ame.stats.mls_st == expected_loads_2x4, "2x4_db mls.st load count mismatch");
+
+    /* 3. Test 4x4 without prefetch */
+    memcpy(C_test, C0, (size_t)M * ldc * sizeof(float));
+    ame_stats_reset(&ame);
+    err = ztt_sgemm_strided_4x4(&ame, M, K, P, C_test, A, B, ldc, lda, ldb);
+    TEST_ASSERT(err == AME_OK, "ztt_sgemm_strided_4x4 failed");
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < P; ++j)
+            TEST_ASSERT(fabsf(C_test[i * ldc + j] - C_ref[i * ldc + j]) < 1e-4f, "4x4 numerical mismatch");
+    TEST_ASSERT(ame.stats.mmulacc_2d == expected_macs, "4x4 MAC count mismatch");
+    /* In 4x4: (Mt/4) * (Pt/4) blocks.
+       Per block: 16 C loads.
+       Inner loop k (Kt times): 4 loads for A, 4 loads for B -> 8*Kt loads.
+       Total mls_st = (Mt/4) * (Pt/4) * (16 + 8 * Kt). */
+    const uint64_t expected_loads_4x4 = (Mt / 4) * (Pt / 4) * (16 + 8 * Kt);
+    TEST_ASSERT(ame.stats.mls_st == expected_loads_4x4, "4x4 mls.st load count mismatch");
+
+    /* 4. Test 4x4 with double buffering (prefetch) */
+    memcpy(C_test, C0, (size_t)M * ldc * sizeof(float));
+    ame_stats_reset(&ame);
+    err = ztt_sgemm_strided_4x4_db(&ame, M, K, P, C_test, A, B, ldc, lda, ldb);
+    TEST_ASSERT(err == AME_OK, "ztt_sgemm_strided_4x4_db failed");
+    for (int i = 0; i < M; ++i)
+        for (int j = 0; j < P; ++j)
+            TEST_ASSERT(fabsf(C_test[i * ldc + j] - C_ref[i * ldc + j]) < 1e-4f, "4x4_db numerical mismatch");
+    TEST_ASSERT(ame.stats.mmulacc_2d == expected_macs, "4x4_db MAC count mismatch");
+    TEST_ASSERT(ame.stats.mls_st == expected_loads_4x4, "4x4_db mls.st load count mismatch");
+
+    /* 5. Alignment check: non-multiples of 2N or 4N must return AME_ERR_ILLEGAL_INSN */
+    TEST_ASSERT(ztt_sgemm_strided_2x4(&ame, N, K, P, C_test, A, B, ldc, lda, ldb) == AME_ERR_ILLEGAL_INSN,
+                "2x4 must reject M not multiple of 2N");
+    TEST_ASSERT(ztt_sgemm_strided_4x4(&ame, 2 * N, K, P, C_test, A, B, ldc, lda, ldb) == AME_ERR_ILLEGAL_INSN,
+                "4x4 must reject M not multiple of 4N");
+
+    free(A); free(B); free(C0); free(C_ref); free(C_test);
+    return true;
+}
+
+/******************************************************************************
  * Main Runner
  ******************************************************************************/
 static void run_test(bool (*test_func)(void), const char *name)
@@ -889,6 +1008,7 @@ int main(void)
     run_test(test_unpack_stats, "Unpack statistics");
     run_test(test_pack_stats_accumulate, "Pack statistics accumulate across calls");
     run_test(test_register_aliases, "Register aliases m0, m1, acc0 functionality");
+    run_test(test_multi_register_gemm, "Multi-register strided kernels (2x4, 4x4, DB)");
 
     printf("\n============================================================\n");
     printf("  Summary: %d / %d tests passed (%s)\n",

@@ -343,6 +343,33 @@ for (int i = 0; i < M; i += N) {
 
 ---
 
+### 6.3 Microkernels Multi-Registrador e Double-Buffering (Fase 3)
+
+Para maximizar o reuso de registradores e amortizar os acessos à memória (aumentando a intensidade aritmética), foram desenvolvidos microkernels que mantêm blocos $R_M \times R_P$ de acumuladores simultaneamente:
+
+1. **`ztt_sgemm_strided_2x4`**:
+   - Acumuladores: 8 (`acc0..acc7` dispostos em grade $2 \times 4$).
+   - Registradores de matriz: 6 (`m0..m1` para 2 tiles da linha de $A$, `m2..m5` para 4 tiles da coluna de $B$).
+   - Reuso: cada tile de $A$ é reusado 4 vezes; cada tile de $B$ é reusado 2 vezes.
+   - Redução de cargas no loop interno: **$62.5\%$** em relação ao baseline $1 \times 1$.
+
+2. **`ztt_sgemm_strided_2x4_db` (Double-Buffering / Prefetch)**:
+   - Utiliza 12 registradores $M$ em dois buffers ping-pong (`m0..m5` para iteração $k$, `m6..m11` para iteração $k+1$).
+   - Intercala as cargas de memória da iteração seguinte com o cálculo dos 8 MACs da iteração atual para ocultar latência de memória.
+
+3. **`ztt_sgemm_strided_4x4`**:
+   - Acumuladores: 16 (`acc0..acc15` dispostos em grade $4 \times 4$).
+   - Registradores de matriz: 8 (`m0..m3` para 4 tiles de $A$, `m4..m7` para 4 tiles de $B$).
+   - Reuso: cada tile de $A$ é reusado 4 vezes; cada tile de $B$ é reusado 4 vezes.
+   - Intensidade aritmética máxima: **$2.0$ MACs por carga de memória** ($4\times$ superior ao baseline $1 \times 1$).
+   - Redução de cargas no loop interno: **$75.0\%$** em relação ao baseline $1 \times 1$.
+
+4. **`ztt_sgemm_strided_4x4_db` (Double-Buffering / Prefetch)**:
+   - Utiliza 16 registradores $M$ em dois buffers ping-pong (`m0..m7` e `m8..m15`).
+   - Software pipelining completo com total desacoplamento entre acessos à memória e pipeline computacional 2D.
+
+---
+
 ## 7. Como Compilar e Executar
 
 O diretório conta com um `Makefile` automatizado.

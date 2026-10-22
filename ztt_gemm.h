@@ -16,6 +16,31 @@ ame_err_t ztt_igemm_strided(ame_state_t *ame,
                             int32_t *C, const int32_t *A, const int32_t *B,
                             size_t ldc, size_t lda, size_t ldb);
 
+/* Multi-Register Strided Kernels */
+/* 2x4 tile block (8 acc registers: acc0..acc7; 6 m registers: m0..m5) */
+ame_err_t ztt_sgemm_strided_2x4(ame_state_t *ame,
+                                int M, int K, int P,
+                                float *C, const float *A, const float *B,
+                                size_t ldc, size_t lda, size_t ldb);
+
+/* 2x4 with Double Buffering / Prefetching (8 acc, 12 m registers) */
+ame_err_t ztt_sgemm_strided_2x4_db(ame_state_t *ame,
+                                   int M, int K, int P,
+                                   float *C, const float *A, const float *B,
+                                   size_t ldc, size_t lda, size_t ldb);
+
+/* 4x4 tile block (16 acc registers: acc0..acc15; 8 m registers: m0..m7) */
+ame_err_t ztt_sgemm_strided_4x4(ame_state_t *ame,
+                                int M, int K, int P,
+                                float *C, const float *A, const float *B,
+                                size_t ldc, size_t lda, size_t ldb);
+
+/* 4x4 with Double Buffering / Prefetching (16 acc, 16 m registers) */
+ame_err_t ztt_sgemm_strided_4x4_db(ame_state_t *ame,
+                                   int M, int K, int P,
+                                   float *C, const float *A, const float *B,
+                                   size_t ldc, size_t lda, size_t ldb);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

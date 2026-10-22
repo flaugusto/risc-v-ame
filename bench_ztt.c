@@ -66,6 +66,78 @@ static void run_shape_comparison(ame_state_t *ame, int M, int K, int P)
     free(C);
 }
 
+static void run_multireg_benchmark(ame_state_t *ame, int M, int K, int P)
+{
+    float *A = (float *)calloc((size_t)M * K, sizeof(float));
+    float *B = (float *)calloc((size_t)K * P, sizeof(float));
+    float *C = (float *)calloc((size_t)M * P, sizeof(float));
+
+    /* 1. Baseline 1x1 */
+    ame_stats_reset(ame);
+    ztt_sgemm_strided(ame, M, K, P, C, A, B, P, K, P);
+    const ame_stats_t st_1x1 = ame->stats;
+
+    /* 2. 2x4 No Prefetch */
+    ame_stats_reset(ame);
+    ztt_sgemm_strided_2x4(ame, M, K, P, C, A, B, P, K, P);
+    const ame_stats_t st_2x4 = ame->stats;
+
+    /* 3. 2x4 Double-Buffered (Prefetch) */
+    ame_stats_reset(ame);
+    ztt_sgemm_strided_2x4_db(ame, M, K, P, C, A, B, P, K, P);
+    const ame_stats_t st_2x4_db = ame->stats;
+
+    /* 4. 4x4 No Prefetch */
+    ame_stats_reset(ame);
+    ztt_sgemm_strided_4x4(ame, M, K, P, C, A, B, P, K, P);
+    const ame_stats_t st_4x4 = ame->stats;
+
+    /* 5. 4x4 Double-Buffered (Prefetch) */
+    ame_stats_reset(ame);
+    ztt_sgemm_strided_4x4_db(ame, M, K, P, C, A, B, P, K, P);
+    const ame_stats_t st_4x4_db = ame->stats;
+
+    const double tile_macs = (double)st_1x1.mmulacc_2d;
+    const uint64_t scalar_macs = (uint64_t)M * K * P;
+
+    printf("\n>>> Matrix Shape: %dx%dx%d (Tile Grid: %dx%dx%d | Scalar MACs: %llu | Tile-MACs: %.0f)\n",
+           M, K, P, M / AME_N, K / AME_N, P / AME_N,
+           (unsigned long long)scalar_macs, tile_macs);
+    printf("----------------------------------------------------------------------------------------------------------\n");
+    printf(" Kernel Configuration        | mls.st Loads | Total Bytes   | Tile-MAC / Load  | Load Reduction | Traffic Savings\n");
+    printf("-----------------------------+--------------+---------------+------------------+----------------+----------------\n");
+
+    struct {
+        const char *name;
+        ame_stats_t st;
+    } configs[] = {
+        {"1x1 Baseline (1 acc, 2 m)", st_1x1},
+        {"2x4 (8 acc, 6 m)", st_2x4},
+        {"2x4 Prefetch (8 acc, 12 m)", st_2x4_db},
+        {"4x4 (16 acc, 8 m)", st_4x4},
+        {"4x4 Prefetch (16 acc, 16 m)", st_4x4_db},
+    };
+
+    for (size_t i = 0; i < sizeof(configs) / sizeof(configs[0]); ++i) {
+        uint64_t loads = configs[i].st.mls_st;
+        uint64_t bytes = configs[i].st.bytes_loaded + configs[i].st.bytes_stored;
+        double ratio = tile_macs / (double)loads;
+        double load_red = (1.0 - (double)loads / (double)st_1x1.mls_st) * 100.0;
+        double traffic_sav = (1.0 - (double)bytes / (double)(st_1x1.bytes_loaded + st_1x1.bytes_stored)) * 100.0;
+
+        printf(" %-27s | %12llu | %10llu KB | %16.2f | %13.1f%% | %14.1f%%\n",
+               configs[i].name,
+               (unsigned long long)loads,
+               (unsigned long long)(bytes / 1024),
+               ratio,
+               load_red,
+               traffic_sav);
+    }
+    printf("----------------------------------------------------------------------------------------------------------\n");
+
+    free(A); free(B); free(C);
+}
+
 int main(void)
 {
     const int N = AME_N;
@@ -95,5 +167,22 @@ int main(void)
         run_shape_comparison(&ame, shapes[s][0], shapes[s][1], shapes[s][2]);
     }
     printf("========================================================================================\n");
+
+    printf("\n======================================================================================================\n");
+    printf("  PART 2: Multi-Register SGEMM & Double-Buffering Architectural Evaluation\n");
+    printf("  Comparing 1x1 Baseline, 2x4, and 4x4 Accumulator Tiling with Register Prefetching\n");
+    printf("======================================================================================================\n");
+
+    const int multireg_shapes[][3] = {
+        {4 * N, 4 * N, 4 * N},
+        {8 * N, 8 * N, 8 * N},
+        {16 * N, 16 * N, 16 * N},
+    };
+
+    for (size_t s = 0; s < sizeof(multireg_shapes) / sizeof(multireg_shapes[0]); ++s)
+    {
+        run_multireg_benchmark(&ame, multireg_shapes[s][0], multireg_shapes[s][1], multireg_shapes[s][2]);
+    }
+
     return 0;
 }

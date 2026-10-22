@@ -43,7 +43,7 @@ extern "C"
 
 /* Number of accumulator registers Acc0..Acc[AME_NUM_ACC_REGS-1] (1, 2, 4, 8, 16) */
 #ifndef AME_NUM_ACC_REGS
-#define AME_NUM_ACC_REGS 8
+#define AME_NUM_ACC_REGS 16
 #endif
 
 /* Unit datatype size in bits (power of 2) */
