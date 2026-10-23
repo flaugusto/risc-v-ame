@@ -4,7 +4,7 @@
 
 This document provides a technical reference for the base C instruction emulation library of the **RISC-V Attached Matrix Extension (AME)** simulator.
 
-> **Specification Note**: This simulator is based on the RISC-V Attached Matrix Extension (Ztt) specification version 0.6. For the official specification document and release details, refer to the [GitHub Release v0.6](https://github.com/riscv/riscv-attached-matrix-extension/releases/tag/v0.6).
+**Specification Note**: This simulator is based on the RISC-V Attached Matrix Extension (Ztt) specification version 0.6. For the official specification document and release details, refer to the [GitHub Release v0.6](https://github.com/riscv/riscv-attached-matrix-extension/releases/tag/v0.6).
 
 This simulator models the register banks, control/status registers (CSRs), datatype descriptors, memory transfers, and compute execution of the official AME specification. It is intended for kernel developers who want to write and evaluate custom matrix computation kernels (such as GEMM, convolutions, activations, or tensor contractions) using simulated AME hardware instructions before deploying to physical silicon or full-system emulators.
 
@@ -487,8 +487,7 @@ Returns the size of one element in bytes (e.g., 4 for `AME_DTYPE_FP32`).
 
 ### 6.10 Profiling and Performance Statistics
 
-> [!NOTE]
-> `ame->stats` is **not part of the official RISC-V AME specification**. It is a simulator-specific facility provided solely for performance monitoring, memory traffic analysis, and kernel profiling.
+**Note**: `ame->stats` is **not part of the official RISC-V AME specification**. It is a simulator-specific facility provided solely for performance monitoring, memory traffic analysis, and kernel profiling.
 
 The simulator tracks instruction counts, data traffic, and arithmetic operations in `ame->stats`:
 
