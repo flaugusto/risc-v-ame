@@ -79,19 +79,19 @@ The hardware provides two separate register banks:
 
 1. **Matrix Registers ($M_0 \dots M_{31}$)**:
    - Hold input matrices for arithmetic operations and destination tiles for elementwise operations.
-   - Sized to `AME_M_REG_SIZE_BYTES` = $(\text{AME\_NELEM} \times \text{AME\_UNIT\_DATATYPE\_SIZE}) / 8$.
+   - Sized to `AME_M_REG_SIZE_BYTES` = `(AME_NELEM * AME_UNIT_DATATYPE_SIZE) / 8` bytes.
    - Register aliases `m0` through `m31` are provided for code readability.
 2. **Accumulator Registers ($\text{Acc}_0 \dots \text{Acc}_{15}$)**:
    - Dedicated destinations for matrix multiply-accumulate (`ame_mmulacc_2d`) operations.
-   - Sized to `AME_ACC_REG_SIZE_BYTES` = $(\text{AME\_NELEM} \times \text{AME\_MAX\_DATATYPE\_SIZE}) / 8$ (supports up to 64-bit wide elements).
+   - Sized to `AME_ACC_REG_SIZE_BYTES` = `(AME_NELEM * AME_MAX_DATATYPE_SIZE) / 8` bytes (supports up to 64-bit wide elements).
    - Register aliases `acc0` through `acc15` are provided.
 
 ### 3.3 Register Grouping Rule
 
-When using datatypes wider than `AME_UNIT_DATATYPE_SIZE` (32 bits), logical tiles span multiple consecutive physical $M$ registers:
-$$\text{group\_size} = \max\left(1, \left\lceil \frac{\text{element\_size\_bits}}{\text{AME\_UNIT\_DATATYPE\_SIZE}} \right\rceil\right)$$
+When using datatypes wider than `AME_UNIT_DATATYPE_SIZE` ($S_{\text{unit}} = 32$ bits), logical tiles span multiple consecutive physical $M$ registers:
+$$\text{group}_{\text{size}} = \max\left(1, \left\lceil \frac{E}{S_{\text{unit}}} \right\rceil\right)$$
 
-- **Alignment Invariant**: The base matrix register index $md$ must be a multiple of $\text{group\_size}$ (`md % group_size == 0`). Violating this triggers `AME_ERR_ILLEGAL_INSN`.
+- **Alignment Invariant**: The base matrix register index $md$ must be a multiple of `group_size` (`md % group_size == 0`). Violating this triggers `AME_ERR_ILLEGAL_INSN`.
 
 ### 3.4 Decoupled Datatype Descriptors ($Md$ and $Ad$)
 
@@ -235,7 +235,7 @@ ame_err_t ame_msettyp(ame_state_t *ame, uint32_t md, uint32_t rs1_val);
 - **Description**: Emulates `msettyp md, rs1`. Configures the 32-bit datatype descriptor for matrix register `md` and its group.
 - **Parameters**:
   - `ame`: Pointer to the simulator state instance.
-  - `md`: Index of matrix register ($0 \dots \text{AME\_NUM\_M\_REGS}-1$; aliases `m0`..`m31`).
+  - `md`: Index of matrix register (`0` to `AME_NUM_M_REGS - 1`; aliases `m0`..`m31`).
   - `rs1_val`: 32-bit datatype descriptor value (e.g., `AME_DTYPE_FP32`).
 - **Return / Behavior**:
   - Checks that `md` satisfies group alignment (`md % group_size == 0`) and does not exceed available registers.
@@ -252,7 +252,7 @@ ame_err_t ame_asettyp(ame_state_t *ame, uint32_t ad, uint32_t rs1_val);
 - **Description**: Emulates `asettyp ad, rs1`. Configures the 32-bit datatype descriptor for accumulator register `ad`.
 - **Parameters**:
   - `ame`: Pointer to the simulator state instance.
-  - `ad`: Index of accumulator register ($0 \dots \text{AME\_NUM\_ACC\_REGS}-1$; aliases `acc0`..`acc15`).
+  - `ad`: Index of accumulator register (`0` to `AME_NUM_ACC_REGS - 1`; aliases `acc0`..`acc15`).
   - `rs1_val`: 32-bit datatype descriptor value.
 - **Return / Behavior**:
   - Writes `rs1_val` to `Ad[ad]`.
@@ -317,7 +317,7 @@ ame_err_t ame_mls_rm(ame_state_t *ame, uint32_t md, const void *base_addr);
   - `md`: Destination matrix register index (`m0`..`m31`).
   - `base_addr`: Pointer to contiguous memory buffer holding $N \times N$ elements.
 - **Return / Behavior**:
-  - Calculates total transfer size: $\text{AME\_NELEM} \times \text{element\_size\_bytes}$.
+  - Calculates total transfer size: `AME_NELEM * element_size_bytes` bytes.
   - Verifies natural alignment: `(uintptr_t)base_addr % element_size_bytes == 0`. Returns `AME_ERR_MISALIGNED` if misaligned.
   - Copies data into `M[md]`.
   - Increments `stats.mls_rm` by 1 and `stats.bytes_loaded` by the byte count.
@@ -357,13 +357,13 @@ ame_err_t ame_mls_st(ame_state_t *ame, uint32_t md, const void *base_addr, size_
   - `ame`: Pointer to the simulator state instance.
   - `md`: Destination matrix register index (`m0`..`m31`).
   - `base_addr`: Memory address of the top-left element of the tile.
-  - `stride_bytes`: Byte distance between consecutive rows in the source matrix (typically $\text{leading\_dimension} \times \text{element\_size\_bytes}$).
+  - `stride_bytes`: Byte distance between consecutive rows in the source matrix (typically `leading_dimension * element_size_bytes`).
 - **Return / Behavior**:
-  - For each row $r \in [0, N-1]$, reads $N \times \text{element\_size\_bytes}$ from:
-    $$\text{base\_addr} + r \times \text{stride\_bytes}$$
+  - For each row $r \in [0, N-1]$, reads `N * element_size_bytes` bytes from:
+    $$\text{base} + r \times \text{stride}$$
     and writes consecutively into row $r$ of matrix register `M[md]`.
   - Checks natural alignment of `base_addr`.
-  - Increments `stats.mls_st` by 1 and `stats.bytes_loaded` by $\text{AME\_NELEM} \times \text{element\_size\_bytes}$.
+  - Increments `stats.mls_st` by 1 and `stats.bytes_loaded` by `AME_NELEM * element_size_bytes` bytes.
   - Returns `AME_OK`.
 
 #### `ame_mss_st`
@@ -379,10 +379,10 @@ ame_err_t ame_mss_st(ame_state_t *ame, uint32_t ms, void *base_addr, size_t stri
   - `base_addr`: Memory address of the top-left destination element.
   - `stride_bytes`: Byte distance between consecutive rows in destination memory.
 - **Return / Behavior**:
-  - For each row $r \in [0, N-1]$, writes row $r$ of `M[ms]` ($N \times \text{element\_size\_bytes}$) to:
-    $$\text{base\_addr} + r \times \text{stride\_bytes}$$
+  - For each row $r \in [0, N-1]$, writes row $r$ of `M[ms]` (`N * element_size_bytes` bytes) to:
+    $$\text{base} + r \times \text{stride}$$
   - Checks natural alignment of `base_addr`.
-  - Increments `stats.mss_st` by 1 and `stats.bytes_stored` by $\text{AME\_NELEM} \times \text{element\_size\_bytes}$.
+  - Increments `stats.mss_st` by 1 and `stats.bytes_stored` by `AME_NELEM * element_size_bytes` bytes.
   - Returns `AME_OK`.
 
 ---
@@ -434,7 +434,7 @@ ame_err_t ame_mmov_m_a(ame_state_t *ame, uint32_t md, uint32_t acc);
 - **Return / Behavior**:
   - Checks strict datatype equality: `Md[md] == Ad[acc]`. If types differ, sets `ame->amestatus |= AME_STATUS_UN` and returns `AME_ERR_UNSUPPORTED`.
   - Verifies group alignment of `md`.
-  - Copies $\text{AME\_NELEM} \times \text{element\_size\_bytes}$ from `Acc[acc]` to `M[md]`.
+  - Copies `AME_NELEM * element_size_bytes` bytes from `Acc[acc]` to `M[md]`.
   - Increments `stats.mmov_m_a` by 1.
   - Returns `AME_OK`.
 

@@ -1,13 +1,13 @@
 # Estratégias para GEMM com Dimensões Arbitrárias no RISC-V AME (Ztt v0.6)
 
-Este documento registra as opções arquiteturais e de software para suportar multiplicações de matrizes com dimensões arbitrárias ($M, K, P$ não múltiplos de $N = \sqrt{\text{AME\_NELEM}}$) utilizando a extensão matricial **RISC-V AME (Ztt v0.6)**.
+Este documento registra as opções arquiteturais e de software para suportar multiplicações de matrizes com dimensões arbitrárias ($M, K, P$ não múltiplos de $N = \sqrt{\text{NELEM}}$, com `AME_NELEM`) utilizando a extensão matricial **RISC-V AME (Ztt v0.6)**.
 
 ---
 
 ## 1. Contexto do Problema
 
 Os microkernels acelerados por hardware (`ztt_sgemm_strided` e `ztt_igemm_strided`) operam em blocos atômicos $N \times N$. Cargas e escritas de memória (`mls.st`, `mss.st`, `mls.rm`, `mss.rm`) transferem ladrilhos inteiros de tamanho fixo:
-$$\text{AME\_NELEM} = N \times N$$
+$$\text{NELEM} = N \times N$$
 
 Quando $M$, $K$ ou $P$ não são múltiplos exatos de $N$, as bordas da matriz não preenchem um ladrilho completo. Três estratégias principais resolvem essa incompatibilidade no nível de biblioteca ou runtime.
 
@@ -52,10 +52,10 @@ rem |  Ladrilhos   |Canto   Bordas e cantos tratados via limpeza
 
 Se o runtime gerencia a criação dos tensores:
 1. Aloca-se a matriz em memória com dimensões alinhadas para cima em múltiplos de $N$:
-   $$\text{lda} = \text{round\_up}(K, N), \quad \text{ldb} = \text{round\_up}(P, N), \quad \text{ldc} = \text{round\_up}(P, N)$$
+   $$\text{lda} = \text{roundup}(K, N), \quad \text{ldb} = \text{roundup}(P, N), \quad \text{ldc} = \text{roundup}(P, N)$$
 2. Os elementos extras de padding são zerados na inicialização.
 3. Chama-se diretamente o microkernel strided com as dimensões arredondadas:
-   $$\text{ztt\_sgemm\_strided}(\dots, M_{\text{pad}}, K_{\text{pad}}, P_{\text{pad}}, \dots, \text{ldc}, \text{lda}, \text{ldb})$$
+   `ztt_sgemm_strided(..., M_pad, K_pad, P_pad, ..., ldc, lda, ldb)`
 4. O código consumidor lê apenas a sub-visão lógica $M \times P$ de $C$.
 - **Vantagem**: Zero cópias e zero desempacotamento em runtime.
 

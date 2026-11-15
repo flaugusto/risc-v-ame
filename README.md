@@ -47,7 +47,7 @@ Como o desenvolvimento e a prototipagem de hardware em silício (_tape-out_) dem
 
 A extensão **AME** adota o conceito de **quadrados lógicos (_squares_)** de dimensão $N \times N$:
 
-- As matrizes são particionadas em blocos bidimensionais $N \times N$, onde $N = \sqrt{\text{AME\_NELEM}}$.
+- As matrizes são particionadas em blocos bidimensionais $N \times N$, onde $N = \sqrt{\text{NELEM}}$ (`AME_NELEM`).
 - Existem dois arquivos principais de registradores:
   - **Registradores de Matriz ($M$)**: Armazenam operandos de entrada para as multiplicações e resultados de operações elementwise. Se o tipo for maior que o tamanho base da unidade (`AME_UNIT_DATATYPE_SIZE`), múltiplos registradores $M$ consecutivos são agrupados logicamente.
   - **Registradores Acumuladores ($Acc$)**: Destinados exclusivamente a acumular os produtos matriciais das instruções `mmulacc`. Cada acumulador é dimensionado para conter um quadrado lógico completo do maior tipo suportado.
@@ -84,17 +84,17 @@ O comportamento do hardware é moldado pelas seguintes constantes (definidas em 
 | Constante                | Valor Padrão | Descrição                                                                                                             |
 | :----------------------- | :----------- | :-------------------------------------------------------------------------------------------------------------------- |
 | `AME_NELEM`              | `64`         | Número fixo de elementos em um quadrado lógico. Deve ser uma potência de 4 ($16, 64, 256, 1024, 4096, 16384$).        |
-| `AME_N`                  | `8`          | Dimensão linear da matriz quadrada: $N = \sqrt{\text{AME\_NELEM}}$. Deve ser uma potência de 2.                       |
+| `AME_N`                  | `8`          | Dimensão linear da matriz quadrada: $N = \sqrt{\text{NELEM}}$ (`AME_NELEM`). Deve ser uma potência de 2.             |
 | `AME_NUM_M_REGS`         | `32`         | Quantidade de registradores de matriz gerais ($M_0$ a $M_{31}$). A especificação permite 16 ou 32.                    |
 | `AME_NUM_ACC_REGS`       | `8`          | Quantidade de acumuladores implementados ($Acc_0$ a $Acc_7$). A especificação permite 1, 2, 4, 8 ou 16.               |
 | `AME_UNIT_DATATYPE_SIZE` | `32` bits    | Tamanho em bits no qual exatamente 1 quadrado lógico cabe em 1 registrador $M$.                                       |
-| `AME_M_REG_SIZE_BYTES`   | `256` bytes  | Tamanho físico em bytes de um registrador $M$: $\frac{\text{AME\_NELEM} \times \text{AME\_UNIT\_DATATYPE\_SIZE}}{8}$. |
+| `AME_M_REG_SIZE_BYTES`   | `256` bytes  | Tamanho físico em bytes de um registrador $M$: `(AME_NELEM * AME_UNIT_DATATYPE_SIZE) / 8`.                            |
 | `AME_ACC_REG_SIZE_BYTES` | `512` bytes  | Tamanho físico em bytes de um acumulador (para suportar até tipos de 64 bits por elemento).                           |
 
 ### Regra de Agrupamento (_Register Grouping_)
 
-Para tipos de dados cujo tamanho em bits $E$ seja superior a `AME_UNIT_DATATYPE_SIZE`:
-$$\text{group\_size} = \max\left(1, \left\lceil \frac{E}{\text{AME\_UNIT\_DATATYPE\_SIZE}} \right\rceil\right)$$
+Para tipos de dados cujo tamanho em bits $E$ seja superior a `AME_UNIT_DATATYPE_SIZE` ($S_{\text{unit}} = 32$ bits):
+$$\text{group}_{\text{size}} = \max\left(1, \left\lceil \frac{E}{S_{\text{unit}}} \right\rceil\right)$$
 
 - **Alinhamento obrigatório**: O índice do registrador $M$ base **deve ser múltiplo de `group_size`**. Caso contrário, o hardware dispara uma exceção de instrução ilegal (`AME_ERR_ILLEGAL_INSN`).
 
@@ -242,7 +242,7 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 - **Funcionamento**: Carrega um quadrado $N \times N$ da memória contígua em formato Row-Major para o registrador `M[md]` (ou seu grupo de registradores).
   - Lê o tipo de dados configurado em `Md[md]`.
   - **Verificação de alinhamento natural**: Exige que o endereço de memória `base_addr` seja alinhado ao tamanho do elemento em bytes: `base_addr % elem_bytes == 0`. Se desalinhado, retorna `AME_ERR_MISALIGNED`.
-  - Transfere exatamente $N \times N \times \text{elem\_bytes}$ bytes para o registrador.
+  - Transfere exatamente $N \times N$ elementos (`AME_NELEM * elem_bytes` bytes) para o registrador.
 
 #### `ame_err_t ame_mss_rm(const ame_state_t *ame, uint32_t ms, void *base_addr)`
 
