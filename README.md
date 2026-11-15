@@ -93,8 +93,11 @@ O comportamento do hardware é moldado pelas seguintes constantes (definidas em 
 
 ### Regra de Agrupamento (_Register Grouping_)
 
-Para tipos de dados cujo tamanho em bits $E$ seja superior a `AME_UNIT_DATATYPE_SIZE` ($S_{\text{unit}} = 32$ bits):
-$$\text{group}_{\text{size}} = \max\left(1, \left\lceil \frac{E}{S_{\text{unit}}} \right\rceil\right)$$
+Para tipos de dados cujo tamanho em bits $E$ seja superior a `AME_UNIT_DATATYPE_SIZE` (32 bits), o fator de agrupamento de registradores (`group_size`) é definido como:
+
+$$
+\text{group}_{\text{size}} = \max\left(1, \left\lceil \frac{E}{32} \right\rceil\right)
+$$
 
 - **Alinhamento obrigatório**: O índice do registrador $M$ base **deve ser múltiplo de `group_size`**. Caso contrário, o hardware dispara uma exceção de instrução ilegal (`AME_ERR_ILLEGAL_INSN`).
 

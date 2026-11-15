@@ -88,8 +88,11 @@ The hardware provides two separate register banks:
 
 ### 3.3 Register Grouping Rule
 
-When using datatypes wider than `AME_UNIT_DATATYPE_SIZE` ($S_{\text{unit}} = 32$ bits), logical tiles span multiple consecutive physical $M$ registers:
-$$\text{group}_{\text{size}} = \max\left(1, \left\lceil \frac{E}{S_{\text{unit}}} \right\rceil\right)$$
+When using datatypes wider than `AME_UNIT_DATATYPE_SIZE` (32 bits), the register grouping factor (`group_size`) is defined as:
+
+$$
+\text{group}_{\text{size}} = \max\left(1, \left\lceil \frac{E}{32} \right\rceil\right)
+$$
 
 - **Alignment Invariant**: The base matrix register index $md$ must be a multiple of `group_size` (`md % group_size == 0`). Violating this triggers `AME_ERR_ILLEGAL_INSN`.
 
