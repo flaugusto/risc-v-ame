@@ -1,42 +1,58 @@
-# Simulador RISC-V Attached Matrix Extension (AME - Ztt v0.6)
+# Simulador funcional de instruções da extensão AME do RISC-V
 
-Este diretório contém a implementação em C do mini-simulador da extensão de matrizes acopladas do RISC-V (**Attached Matrix Extension - Ztt v0.6**), desenvolvida como expansão do projeto **QDMAES**.
+Este projeto é uma implementação de um simulador funcional da extensão para instruções matriciais para processadores RISC-V (**Attached Matrix Extension - AME**) baseada no simulador QDMAES.
 
-O objetivo deste componente é modelar fielmente a arquitetura, o banco de registradores, os registradores de controle e status (CSRs), os descritores de tipo de dados e as instruções do núcleo computacional da especificação oficial **Ztt v0.6**, com foco inicial na execução de multiplicação geral de matrizes (**GEMM**).
-
-> **English API Reference**: For a comprehensive English (en-US) reference covering simulator instruction semantics, parameters, return codes, and a kernel development tutorial, see [API_REFERENCE.md](API_REFERENCE.md).
+O objetivo deste componente é modelar fielmente a arquitetura, o banco de registradores, os registradores de controle e status (CSRs), os descritores de tipo de dados e as instruções do núcleo computacional da especificação oficial **AME**, com foco inicial na execução de multiplicação geral de matrizes (**GEMM**).
 
 ---
 
 ## Sumário
 
-1. [Visão Geral da Arquitetura](#1-visão-geral-da-arquitetura)
-2. [Parâmetros de Hardware (Capítulo 4)](#2-parâmetros-de-hardware-capítulo-4)
-3. [Descritores de Tipos de Dados (Seção 2.4)](#3-descritores-de-tipos-de-dados-seção-24)
-4. [Estado do Hardware e CSRs (Capítulos 3 e 5)](#4-estado-do-hardware-e-csrs-capítulos-3-e-5)
-5. [Instruções e Funções da API](#5-instruções-e-funções-da-api)
-   - [5.1 Gerenciamento de Posse e Backend](#51-gerenciamento-de-posse-e-backend)
-   - [5.2 Configuração de Metadados e Tipos](#52-configuração-de-metadados-e-tipos)
-   - [5.3 Instruções de Limpeza (Zeroing)](#53-instruções-de-limpeza-zeroing)
-   - [5.4 Carga e Escrita em Memória (Row-Major)](#54-carga-e-escrita-em-memória-row-major)
-   - [5.5 Multiplicação-Acumulação Matricial 2D](#55-multiplicação-acumulação-matricial-2d)
-   - [5.6 Movimentação de Registradores](#56-movimentação-de-registradores)
-6. [Microkernel GEMM Tiled](#6-microkernel-gemm-tiled)
-7. [Como Compilar e Executar](#7-como-compilar-e-executar)
-8. [Suíte de Testes Automatizada](#8-suíte-de-testes-automatizada)
+1. [Contexto do Projeto](#1-contexto-do-projeto)
+2. [Visão Geral da Arquitetura](#2-visão-geral-da-arquitetura)
+3. [Parâmetros de Hardware](#3-parâmetros-de-hardware)
+4. [Descritores de Tipos de Dados](#4-descritores-de-tipos-de-dados)
+5. [Estado do Hardware e CSRs](#5-estado-do-hardware-e-csrs)
+6. [Instruções e Funções da API](#6-instruções-e-funções-da-api)
+   - [6.1 Gerenciamento de Posse e Backend](#61-gerenciamento-de-posse-e-backend)
+   - [6.2 Configuração de Metadados e Tipos](#62-configuração-de-metadados-e-tipos)
+   - [6.3 Instruções de Limpeza (Zeroing)](#63-instruções-de-limpeza-zeroing)
+   - [6.4 Carga e Escrita em Memória (Row-Major)](#64-carga-e-escrita-em-memória-row-major)
+   - [6.5 Multiplicação-Acumulação Matricial 2D](#65-multiplicação-acumulação-matricial-2d)
+   - [6.6 Movimentação de Registradores](#66-movimentação-de-registradores)
+7. [Microkernel GEMM Tiled](#7-microkernel-gemm-tiled)
+8. [Como Compilar e Executar](#8-como-compilar-e-executar)
+9. [Suíte de Testes Automatizada](#9-suíte-de-testes-automatizada)
+10. [Estatísticas de Instruções e Tráfego](#10-estatísticas-de-instruções-e-tráfego)
+11. [Referência de API](#referência-de-api)
+12. [Especificação completa](#especificação-completa)
 
 ---
 
-## 1. Visão Geral da Arquitetura
+## 1. Contexto do projeto
 
-Diferente do modelo legado em `v0_Gem5` (que utilizava uma ISA customizada com rotações circulares manuais de registradores), a extensão **Ztt v0.6** adota o conceito de **quadrados lógicos (_squares_)** de dimensão $N \times N$:
+O avanço de modelos modernos de inteligência artificial (como Grandes Modelos de Linguagem - LLMs) impulsionou uma demanda sem precedentes por processamento de álgebra linear densa (**GEMM**). Em arquiteturas tradicionais escalares ou vetoriais unidimensionais (SIMD), grande parte do tempo e da energia é consumida pela contínua transferência de operandos entre a hierarquia de memória e os registradores, colidindo com o gargalo do **_memory wall_**.
+
+Para mitigar esse problema, a indústria tem integrado extensões matriciais baseadas em blocos bidimensionais (_tiles_), a exemplo de Intel AMX e ARM SME. No ecossistema aberto **RISC-V**, essa abordagem é padronizada pelo _Matrix Extension Task Group_ através da proposta **Attached Matrix Extension (AME)**, proporcionando um reúso de dados no banco de registradores que escala na ordem $\mathcal{O}(N)$ por elemento transferido.
+
+Como o desenvolvimento e a prototipagem de hardware em silício (_tape-out_) demandam ciclos longos e custos proibitivos, a relevância deste **simulador funcional** fundamenta-se em:
+
+- **Prototipação rápida e validação conceitual:** Permite experimentar e validar a semântica das instruções matriciais da especificação AME antes de qualquer síntese em RTL.
+- **Avaliação de intensidade operacional:** Viabiliza mensurar o impacto arquitetural no tráfego de dados, aferindo a evolução da razão MAC/load e o ganho de retenção dos registradores 2D.
+- **Ambiente acessível para exploração de software:** Disponibiliza uma base prática e leve para que pesquisadores e desenvolvedores possam compilar, avaliar e otimizar kernels de GEMM alinhados à especificação matricial RISC-V.
+
+---
+
+## 2. Visão Geral da Arquitetura
+
+A extensão **AME** adota o conceito de **quadrados lógicos (_squares_)** de dimensão $N \times N$:
 
 - As matrizes são particionadas em blocos bidimensionais $N \times N$, onde $N = \sqrt{\text{AME\_NELEM}}$.
 - Existem dois arquivos principais de registradores:
   - **Registradores de Matriz ($M$)**: Armazenam operandos de entrada para as multiplicações e resultados de operações elementwise. Se o tipo for maior que o tamanho base da unidade (`AME_UNIT_DATATYPE_SIZE`), múltiplos registradores $M$ consecutivos são agrupados logicamente.
   - **Registradores Acumuladores ($Acc$)**: Destinados exclusivamente a acumular os produtos matriciais das instruções `mmulacc`. Cada acumulador é dimensionado para conter um quadrado lógico completo do maior tipo suportado.
 - Os registradores **não embutem o tipo de dados na instrução assembly**. Em vez disso, cada registrador $M_i$ e $Acc_j$ possui um registrador de metadados correspondente ($Md_i$ e $Ad_j$) configurado previamente por instruções dedicadas (`msettyp` e `asettyp`).
-- **Aliases Mnemônicos**: O cabeçalho `ztt_ame.h` disponibiliza aliases simbólicos (`m0`..`m31` e `acc0`..`acc15`) que espelham a sintaxe do assembly Ztt, melhorando a legibilidade das chamadas de API sem custos em tempo de execução.
+- **Aliases Mnemônicos**: O cabeçalho `ztt_ame.h` disponibiliza aliases simbólicos (`m0`..`m31` e `acc0`..`acc15`) que espelham a sintaxe do assembly da AME, melhorando a legibilidade das chamadas de API sem custos em tempo de execução.
 
 ```
           +-------------------------------------------------+
@@ -61,7 +77,7 @@ Diferente do modelo legado em `v0_Gem5` (que utilizava uma ISA customizada com r
 
 ---
 
-## 2. Parâmetros de Hardware (Capítulo 4)
+## 3. Parâmetros de Hardware
 
 O comportamento do hardware é moldado pelas seguintes constantes (definidas em `ztt_ame.h`):
 
@@ -84,15 +100,15 @@ $$\text{group\_size} = \max\left(1, \left\lceil \frac{E}{\text{AME\_UNIT\_DATATY
 
 ---
 
-## 3. Descritores de Tipos de Dados (Seção 2.4)
+## 4. Descritores de Tipos de Dados
 
-Cada tipo de dado na Ztt é representado por um descritor de **32 bits**:
+Cada tipo de dado na especificação AME é representado por um descritor de **32 bits**:
 
 - **Bit 31**: `0` = Tipo padrão RISC-V, `1` = Tipo customizado do fabricante.
 - **Bits 30:8**: Propriedades específicas da classe (sinal, expoente, saturação, arredondamento).
 - **Bits 7:0**: Largura do elemento em bits ($E$).
 
-### 3.1 Inteiros Padrão (`Bit 8 = 0`)
+### Inteiros Padrão (`Bit 8 = 0`)
 
 - **Bit 30**: `0` = Não-sinalizado (_unsigned_), `1` = Sinalizado (_signed_).
 - **Bit 29**: `1` = Saturação ativada, `0` = Overflow com wrap-around.
@@ -108,7 +124,7 @@ Constantes pré-definidas:
 - `AME_DTYPE_INT32` (`0x40000020`): Inteiro sinalizado de 32 bits.
 - `AME_DTYPE_UINT32` (`0x00000020`): Inteiro sem sinal de 32 bits.
 
-### 3.2 Ponto Flutuante Padrão IEEE (`Bit 8 = 1`)
+### Ponto Flutuante Padrão IEEE (`Bit 8 = 1`)
 
 - **Bits 30:26**: Largura do expoente em bits (`exp_width`), ex: 5 para FP16, 8 para FP32/BF16.
 - **Bits 25:22**: Modo de arredondamento IEEE (`0000` = RNE - Round to Nearest Even).
@@ -124,7 +140,7 @@ Constantes pré-definidas:
 
 ---
 
-## 4. Estado do Hardware e CSRs (Capítulos 3 e 5)
+## 5. Estado do Hardware e CSRs
 
 A estrutura `ame_state_t` encapsula todo o estado arquitetural do acelerador:
 
@@ -147,7 +163,7 @@ typedef struct {
 } ame_state_t;
 ```
 
-### Regras de Posse e Exceções (Seção 5.2)
+### Regras de Posse e Exceções
 
 1. Se `ms_status == AME_MS_OFF`, qualquer instrução AME dispara exceção (`AME_ERR_ILLEGAL_INSN`).
 2. Se `ms_status != Off`, mas `ameown.OWNED == 0`, qualquer instrução exceto `ame.acquire` e `ame.release` é rejeitada com erro de posse (`AME_ERR_NOT_OWNED`).
@@ -155,15 +171,15 @@ typedef struct {
 
 ---
 
-## 5. Instruções e Funções da API
+## 6. Instruções e Funções da API
 
 Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código negativo de erro (`AME_ERR_*`).
 
-### 5.1 Gerenciamento de Posse e Backend
+### 6.1 Gerenciamento de Posse e Backend
 
 #### `ame_err_t ame_acquire(ame_state_t *ame, uint32_t *rd, uint32_t rs1_desc)`
 
-- **Mnemônico Ztt**: `ame.acquire rd, rs1`
+- **Mnemônico AME**: `ame.acquire rd, rs1`
 - **Funcionamento**: Requisita a posse atômica do backend AME para o contexto atual.
   - Verifica se `ms_status != AME_MS_OFF`.
   - Valida o descritor de aquisição `rs1_desc` (bits reservados `[31:6]` devem ser zero).
@@ -172,16 +188,16 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 #### `ame_err_t ame_release(ame_state_t *ame)`
 
-- **Mnemônico Ztt**: `ame.release`
+- **Mnemônico AME**: `ame.release`
 - **Funcionamento**: Libera o backend AME, limpando o bit `ameown.OWNED = 0`.
 
 ---
 
-### 5.2 Configuração de Metadados e Tipos
+### 6.2 Configuração de Metadados e Tipos
 
 #### `ame_err_t ame_msettyp(ame_state_t *ame, uint32_t md, uint32_t rs1_val)`
 
-- **Mnemônico Ztt**: `msettyp md, rs1`
+- **Mnemônico AME**: `msettyp md, rs1`
 - **Funcionamento**: Associa o descritor de tipo contido em `rs1_val` ao registrador de matriz `M[md]`.
   - Calcula o tamanho do grupo (`group_size`).
   - Valida se `md` é múltiplo de `group_size`. Se não for, falha com `AME_ERR_ILLEGAL_INSN`.
@@ -190,7 +206,7 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 #### `ame_err_t ame_asettyp(ame_state_t *ame, uint32_t ad, uint32_t rs1_val)`
 
-- **Mnemônico Ztt**: `asettyp ad, rs1`
+- **Mnemônico AME**: `asettyp ad, rs1`
 - **Funcionamento**: Associa o descritor de tipo contido em `rs1_val` ao acumulador `Acc[ad]`.
   - Escreve `Ad[ad] = rs1_val`.
   - **Limpeza física de bits brutos**: Zera todos os bytes de armazenamento físico do acumulador `Acc[ad]`.
@@ -199,30 +215,30 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 #### `ame_err_t ame_agettyp(const ame_state_t *ame, uint32_t *rd, uint32_t ad)`
 
-- **Mnemônicos Ztt**: `mgettyp rd, md` / `agettyp rd, ad`
+- **Mnemônicos AME**: `mgettyp rd, md` / `agettyp rd, ad`
 - **Funcionamento**: Lê o descritor de 32 bits configurado em `Md[md]` ou `Ad[ad]` e armazena em `*rd`.
 
 ---
 
-### 5.3 Instruções de Limpeza (Zeroing)
+### 6.3 Instruções de Limpeza (Zeroing)
 
 #### `ame_err_t ame_mzero_2d_acc(ame_state_t *ame, uint32_t acc)`
 
-- **Mnemônico Ztt**: `mzero.2d.acc acc`
+- **Mnemônico AME**: `mzero.2d.acc acc`
 - **Funcionamento**: Preenche todos os elementos do acumulador `Acc[acc]` com o zero semântico do seu tipo de dados (`+0.0f` para floats, `0` para inteiros). É utilizado antes do loop de redução do GEMM.
 
 #### `ame_err_t ame_mzero_2d_m(ame_state_t *ame, uint32_t md)`
 
-- **Mnemônico Ztt**: `mzero.2d.m md`
+- **Mnemônico AME**: `mzero.2d.m md`
 - **Funcionamento**: Preenche todos os elementos do registrador $M$ (ou grupo) com o zero semântico.
 
 ---
 
-### 5.4 Carga e Escrita em Memória (Row-Major)
+### 6.4 Carga e Escrita em Memória (Row-Major)
 
 #### `ame_err_t ame_mls_rm(ame_state_t *ame, uint32_t md, const void *base_addr)`
 
-- **Mnemônico Ztt**: `mls.rm md, rs1`
+- **Mnemônico AME**: `mls.rm md, rs1`
 - **Funcionamento**: Carrega um quadrado $N \times N$ da memória contígua em formato Row-Major para o registrador `M[md]` (ou seu grupo de registradores).
   - Lê o tipo de dados configurado em `Md[md]`.
   - **Verificação de alinhamento natural**: Exige que o endereço de memória `base_addr` seja alinhado ao tamanho do elemento em bytes: `base_addr % elem_bytes == 0`. Se desalinhado, retorna `AME_ERR_MISALIGNED`.
@@ -230,16 +246,16 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 #### `ame_err_t ame_mss_rm(const ame_state_t *ame, uint32_t ms, void *base_addr)`
 
-- **Mnemônico Ztt**: `mss.rm ms, rs1`
+- **Mnemônico AME**: `mss.rm ms, rs1`
 - **Funcionamento**: Descarrega o quadrado $N \times N$ do registrador `M[ms]` (ou grupo) para a memória contígua em formato Row-Major. Também valida o alinhamento natural de endereço.
 
 ---
 
-### 5.5 Multiplicação-Acumulação Matricial 2D
+### 6.5 Multiplicação-Acumulação Matricial 2D
 
 #### `ame_err_t ame_mmulacc_2d(ame_state_t *ame, uint32_t acc, uint32_t ms1, uint32_t ms2)`
 
-- **Mnemônico Ztt**: `mmulacc.2d acc, ms1, ms2`
+- **Mnemônico AME**: `mmulacc.2d acc, ms1, ms2`
 - **Funcionamento**: Realiza a multiplicação matricial bidimensional dos blocos $N \times N$ de $M[ms1]$ e $M[ms2]$ e **acumula** o resultado em `Acc[acc]`:
   $$C_{\text{acc}}[i, j] = C_{\text{acc}}[i, j] + \sum_{k=0}^{N-1} A_{ms1}[i, k] \times B_{ms2}[k, j]$$
   - Valida o alinhamento dos registradores $ms1$ e $ms2$ com seus respectivos `group_size`.
@@ -252,23 +268,23 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 ---
 
-### 5.6 Movimentação de Registradores
+### 6.6 Movimentação de Registradores
 
 #### `ame_err_t ame_mmov_m_a(ame_state_t *ame, uint32_t md, uint32_t acc)`
 
-- **Mnemônico Ztt**: `mmov.m.a md, acc`
+- **Mnemônico AME**: `mmov.m.a md, acc`
 - **Funcionamento**: Transfere o quadrado contido no acumulador `Acc[acc]` para o registrador de matriz `M[md]`.
-  - **Regra estrita da Ztt v0.6**: O tipo configurado em `Ad[acc]` **deve ser idêntico** ao tipo em `Md[md]`. Se diferirem, a instrução não modifica `M[md]`, seta a flag sticky `amestatus.UN = 1` e retorna `AME_ERR_UNSUPPORTED`.
+  - **Regra estrita da especificação AME**: O tipo configurado em `Ad[acc]` **deve ser idêntico** ao tipo em `Md[md]`. Se diferirem, a instrução não modifica `M[md]`, seta a flag sticky `amestatus.UN = 1` e retorna `AME_ERR_UNSUPPORTED`.
   - Transfere todos os $N \times N$ elementos para `M[md]` (ou seu grupo).
 
 #### `ame_err_t ame_mmov_a_m(ame_state_t *ame, uint32_t acc, uint32_t ms)`
 
-- **Mnemônico Ztt**: `mmov.a.m acc, ms`
+- **Mnemônico AME**: `mmov.a.m acc, ms`
 - **Funcionamento**: Cópia inversa, transferindo do registrador $M[ms]$ para o acumulador `Acc[acc]`, com a mesma validação estrita de correspondência de tipos.
 
 ---
 
-## 6. Microkernel GEMM Tiled
+## 7. Microkernel GEMM Tiled
 
 Os arquivos `ztt_gemm.h` e `ztt_gemm.c` implementam os kernels de alto nível:
 
@@ -277,7 +293,7 @@ Os arquivos `ztt_gemm.h` e `ztt_gemm.c` implementam os kernels de alto nível:
 
 ### Layout de Memória (tile-major)
 
-`mls.rm` e `mss.rm` transferem um tile $N \times N$ a partir de um único endereço base, sem _stride_. Por isso os kernels recebem $A$, $B$ e $C$ em layout _block-tiled row-major_ (Ztt v0.6, Seção 7.2.2): cada tile $N \times N$ é contíguo e row-major internamente, e a grade de tiles é row-major. $M$, $K$ e $P$ devem ser múltiplos de $N$; caso contrário o kernel retorna `AME_ERR_ILLEGAL_INSN`.
+`mls.rm` e `mss.rm` transferem um tile $N \times N$ a partir de um único endereço base, sem _stride_. Por isso os kernels recebem $A$, $B$ e $C$ em layout _block-tiled row-major_ (especificação AME, Seção 7.2.2): cada tile $N \times N$ é contíguo e row-major internamente, e a grade de tiles é row-major. $M$, $K$ e $P$ devem ser múltiplos de $N$; caso contrário o kernel retorna `AME_ERR_ILLEGAL_INSN`.
 
 O empacotamento, o preenchimento com zeros e o desempacotamento ficam fora do kernel (nos testes, `pack_tiles` / `unpack_tiles`). Quando os acessos com _stride_ (`mls.st` / `mss.st`) forem implementados (Fase 2), esse empacotamento externo deixa de ser necessário.
 
@@ -313,7 +329,7 @@ for (int i = 0; i < M; i += N) {
 
 ---
 
-### 6.2 Microkernels Strided GEMM (Fase 2 - Hardware In-Place)
+### Microkernels Strided GEMM (Fase 2 - Hardware In-Place)
 
 Com o suporte a acessos strided em hardware (`mls.st` / `mss.st`), as matrizes $A, B, C$ podem residir diretamente no layout row-major padrão (ou arbitrariamente strided) na memória, eliminando qualquer etapa de empacotamento (`pack_tiles` / `unpack_tiles`):
 
@@ -345,7 +361,7 @@ for (int i = 0; i < M; i += N) {
 
 ---
 
-### 6.3 Microkernels Multi-Registrador e Double-Buffering (Fase 3)
+### Microkernels Multi-Registrador e Double-Buffering (Fase 3)
 
 Para maximizar o reuso de registradores e amortizar os acessos à memória (aumentando a intensidade aritmética), foram desenvolvidos microkernels que mantêm blocos $R_M \times R_P$ de acumuladores simultaneamente:
 
@@ -372,7 +388,7 @@ Para maximizar o reuso de registradores e amortizar os acessos à memória (aume
 
 ---
 
-## 7. Como Compilar e Executar
+## 8. Como Compilar e Executar
 
 O diretório conta com um `Makefile` automatizado.
 
@@ -407,7 +423,7 @@ make clean && make test CFLAGS="-Wall -Wextra -O3 -std=c99 -DAME_NELEM=64"
 # Tile N = 16 (AME_NELEM = 256)
 make clean && make test CFLAGS="-Wall -Wextra -O3 -std=c99 -DAME_NELEM=256"
 
-# Tile N = 128 (AME_NELEM = 16384) - Dimensão do exemplo Ztt v0.6
+# Tile N = 128 (AME_NELEM = 16384) - Dimensão do exemplo da especificação AME
 make clean && make test CFLAGS="-Wall -Wextra -O3 -std=c99 -DAME_NELEM=16384"
 ```
 
@@ -423,7 +439,7 @@ Isto gerará o binário `test_ztt_riscv`.
 
 ---
 
-## 8. Suíte de Testes Automatizada
+## 9. Suíte de Testes Automatizada
 
 O arquivo `test_ztt.c` contém testes unitários e de integração que validam cada aspecto da especificação:
 
@@ -453,14 +469,14 @@ O arquivo `test_ztt.c` contém testes unitários e de integração que validam c
     - Valida que instruções rejeitadas (sem posse, tipos incompatíveis) não alteram os contadores.
 11. **`test_stats_reset`** e **`test_stats_report`**:
     - Validam `ame_stats_reset` e que `ame_stats_report` imprime os valores dos contadores e as métricas derivadas.
-13. **`test_strided_memory_roundtrip`** e **`test_full_strided_gemm`**:
+12. **`test_strided_memory_roundtrip`** e **`test_full_strided_gemm`**:
     - Validação de carga e escrita strided (`mls.st` / `mss.st`) e execução ponta a ponta do SGEMM strided in-place com zero empacotamento no host.
-14. **`test_pack_stats_unaligned`**, **`test_pack_stats_aligned`**, **`test_unpack_stats`** e **`test_pack_stats_accumulate`**:
+13. **`test_pack_stats_unaligned`**, **`test_pack_stats_aligned`**, **`test_unpack_stats`** e **`test_pack_stats_accumulate`**:
     - Validam os bytes lidos e escritos por `pack_tiles` e `unpack_tiles` (com e sem _padding_) e o acúmulo entre chamadas.
 
 ---
 
-## 9. Estatísticas de Instruções e Tráfego
+## 10. Estatísticas de Instruções e Tráfego
 
 `ame_state_t` contém um `ame_stats_t stats` com contadores incrementados apenas por instruções bem-sucedidas:
 
@@ -484,3 +500,9 @@ Os helpers de empacotamento (`packing.h`) são usados apenas por testes e benchm
 - `unpack_tiles`: `bytes_read` e `bytes_written` contam os elementos lógicos.
 
 É uma contagem de bytes, não de tempo: assume que o empacotamento é limitado pela memória.
+
+## Referência de API
+
+> **English API Reference**: For a comprehensive English (en-US) reference covering simulator instruction semantics, parameters, return codes, and a kernel development tutorial, see [API_REFERENCE.md](API_REFERENCE.md).
+
+---
