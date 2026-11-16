@@ -17,15 +17,18 @@ O objetivo deste componente é modelar fielmente a arquitetura, o banco de regis
    - [6.1 Gerenciamento de Posse e Backend](#61-gerenciamento-de-posse-e-backend)
    - [6.2 Configuração de Metadados e Tipos](#62-configuração-de-metadados-e-tipos)
    - [6.3 Instruções de Limpeza (Zeroing)](#63-instruções-de-limpeza-zeroing)
-   - [6.4 Carga e Escrita em Memória (Row-Major)](#64-carga-e-escrita-em-memória-row-major)
-   - [6.5 Multiplicação-Acumulação Matricial 2D](#65-multiplicação-acumulação-matricial-2d)
-   - [6.6 Movimentação de Registradores](#66-movimentação-de-registradores)
-7. [Microkernel GEMM Tiled](#7-microkernel-gemm-tiled)
+   - [6.4 Carga e Escrita em Memória Contígua (Row-Major)](#64-carga-e-escrita-em-memória-contígua-row-major)
+   - [6.5 Carga e Escrita em Memória com Stride (In-Place)](#65-carga-e-escrita-em-memória-com-stride-in-place)
+   - [6.6 Multiplicação-Acumulação Matricial 2D](#66-multiplicação-acumulação-matricial-2d)
+   - [6.7 Movimentação de Registradores](#67-movimentação-de-registradores)
+7. [Microkernels GEMM Acelerados](#7-microkernels-gemm-acelerados)
+   - [7.1 Layout de Memória e Algoritmo de Tiling Contíguo](#71-layout-de-memória-e-algoritmo-de-tiling-contíguo)
+   - [7.2 Microkernels Strided In-Place](#72-microkernels-strided-in-place)
+   - [7.3 Microkernels Multi-Registrador e Double-Buffering](#73-microkernels-multi-registrador-e-double-buffering)
 8. [Como Compilar e Executar](#8-como-compilar-e-executar)
 9. [Suíte de Testes Automatizada](#9-suíte-de-testes-automatizada)
 10. [Estatísticas de Instruções e Tráfego](#10-estatísticas-de-instruções-e-tráfego)
 11. [Referência de API](#referência-de-api)
-12. [Especificação completa](#especificação-completa)
 
 ---
 
@@ -59,7 +62,7 @@ A extensão **AME** adota o conceito de **quadrados lógicos (_squares_)** de di
           |                   Memória                       |
           +-------------------------------------------------+
                        ^                        |
-               mss.rm  |                        | mls.rm
+       mss.rm / mss.st |                        | mls.rm / mls.st
                        |                        v
           +-------------------------------------------------+
           |           Registradores de Matriz (M)           |
@@ -70,8 +73,8 @@ A extensão **AME** adota o conceito de **quadrados lógicos (_squares_)** de di
                  |                      v            v
           +---------------+         +-----------------------+
           |  Acumuladores | <------ |      mmulacc.2d       |
-          |  Acc0 .. Acc7 |  C +=   | C = C + (ms1 x ms2)   |
-          | (Ad0 .. Ad7)  |         +-----------------------+
+          | Acc0 .. Acc15 |  C +=   | C = C + (ms1 x ms2)   |
+          | (Ad0 .. Ad15) |         +-----------------------+
           +---------------+
 ```
 
@@ -86,7 +89,7 @@ O comportamento do hardware é moldado pelas seguintes constantes (definidas em 
 | `AME_NELEM`              | `64`         | Número fixo de elementos em um quadrado lógico. Deve ser uma potência de 4 ($16, 64, 256, 1024, 4096, 16384$).        |
 | `AME_N`                  | `8`          | Dimensão linear da matriz quadrada: $N = \sqrt{\text{NELEM}}$ (`AME_NELEM`). Deve ser uma potência de 2.             |
 | `AME_NUM_M_REGS`         | `32`         | Quantidade de registradores de matriz gerais ($M_0$ a $M_{31}$). A especificação permite 16 ou 32.                    |
-| `AME_NUM_ACC_REGS`       | `8`          | Quantidade de acumuladores implementados ($Acc_0$ a $Acc_7$). A especificação permite 1, 2, 4, 8 ou 16.               |
+| `AME_NUM_ACC_REGS`       | `16`         | Quantidade de acumuladores implementados ($Acc_0$ a $Acc_{15}$). A especificação permite 1, 2, 4, 8 ou 16.            |
 | `AME_UNIT_DATATYPE_SIZE` | `32` bits    | Tamanho em bits no qual exatamente 1 quadrado lógico cabe em 1 registrador $M$.                                       |
 | `AME_M_REG_SIZE_BYTES`   | `256` bytes  | Tamanho físico em bytes de um registrador $M$: `(AME_NELEM * AME_UNIT_DATATYPE_SIZE) / 8`.                            |
 | `AME_ACC_REG_SIZE_BYTES` | `512` bytes  | Tamanho físico em bytes de um acumulador (para suportar até tipos de 64 bits por elemento).                           |
@@ -150,7 +153,7 @@ A estrutura `ame_state_t` encapsula todo o estado arquitetural do acelerador:
 ```c
 typedef struct {
     uint8_t M[AME_NUM_M_REGS][AME_M_REG_SIZE_BYTES];     /* Registradores M0..M31 */
-    uint8_t Acc[AME_NUM_ACC_REGS][AME_ACC_REG_SIZE_BYTES]; /* Acumuladores Acc0..Acc7 */
+    uint8_t Acc[AME_NUM_ACC_REGS][AME_ACC_REG_SIZE_BYTES]; /* Acumuladores Acc0..Acc15 */
     uint32_t Md[AME_NUM_M_REGS];                          /* Metadados de tipo de M */
     uint32_t Ad[AME_NUM_ACC_REGS];                        /* Metadados de tipo de Acc */
 
@@ -237,7 +240,7 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 ---
 
-### 6.4 Carga e Escrita em Memória (Row-Major)
+### 6.4 Carga e Escrita em Memória Contígua (Row-Major)
 
 #### `ame_err_t ame_mls_rm(ame_state_t *ame, uint32_t md, const void *base_addr)`
 
@@ -254,7 +257,24 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 ---
 
-### 6.5 Multiplicação-Acumulação Matricial 2D
+### 6.5 Carga e Escrita em Memória com Stride (In-Place)
+
+#### `ame_err_t ame_mls_st(ame_state_t *ame, uint32_t md, const void *base_addr, size_t stride_bytes)`
+
+- **Mnemônico AME**: `mls.st md, (rs1), rs2`
+- **Funcionamento**: Carrega um tile $N \times N$ diretamente de uma matriz 2D em memória com stride arbitrário entre linhas (`stride_bytes`), dispensando empacotamento intermediário em software.
+  - Para cada linha $r \in [0, N-1]$, transfere $N$ elementos consecutivos a partir do endereço `base_addr + r * stride_bytes` para a linha correspondente de `M[md]`.
+  - Valida o alinhamento natural de `base_addr` e incrementa os contadores `mls_st` e `bytes_loaded`.
+
+#### `ame_err_t ame_mss_st(ame_state_t *ame, uint32_t ms, void *base_addr, size_t stride_bytes)`
+
+- **Mnemônico AME**: `mss.st ms, (rs1), rs2`
+- **Funcionamento**: Grava o tile $N \times N$ do registrador `M[ms]` diretamente na memória com o stride de linha especificado (`stride_bytes`).
+  - Valida o alinhamento natural de `base_addr` e incrementa os contadores `mss_st` e `bytes_stored`.
+
+---
+
+### 6.6 Multiplicação-Acumulação Matricial 2D
 
 #### `ame_err_t ame_mmulacc_2d(ame_state_t *ame, uint32_t acc, uint32_t ms1, uint32_t ms2)`
 
@@ -263,7 +283,7 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
   $$C_{\text{acc}}[i, j] = C_{\text{acc}}[i, j] + \sum_{k=0}^{N-1} A_{ms1}[i, k] \times B_{ms2}[k, j]$$
   - Valida o alinhamento dos registradores $ms1$ e $ms2$ com seus respectivos `group_size`.
   - Inspeciona os descritores de tipo `Ad[acc]`, `Md[ms1]` e `Md[ms2]`.
-  - **Tuplas suportadas na Fase 1**:
+  - **Tuplas numéricas suportadas**:
     1. **FP32**: `AME_DTYPE_FP32` $\times$ `AME_DTYPE_FP32` $\to$ `AME_DTYPE_FP32` (precisão simples IEEE 754).
     2. **Int32**: `AME_DTYPE_INT32` $\times$ `AME_DTYPE_INT32` $\to$ `AME_DTYPE_INT32` (inteiros sinalizados com acumulação em 64 bits truncada).
     3. **Uint32**: `AME_DTYPE_UINT32` $\times$ `AME_DTYPE_UINT32` $\to$ `AME_DTYPE_UINT32`.
@@ -271,7 +291,7 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 ---
 
-### 6.6 Movimentação de Registradores
+### 6.7 Movimentação de Registradores
 
 #### `ame_err_t ame_mmov_m_a(ame_state_t *ame, uint32_t md, uint32_t acc)`
 
@@ -287,20 +307,23 @@ Todas as instruções retornam `AME_OK` (`0`) em caso de sucesso, ou um código 
 
 ---
 
-## 7. Microkernel GEMM Tiled
+## 7. Microkernels GEMM Acelerados
 
 Os arquivos `ztt_gemm.h` e `ztt_gemm.c` implementam os kernels de alto nível:
 
-- `ztt_sgemm(...)`: Multiplicação de matrizes em ponto flutuante FP32.
-- `ztt_igemm(...)`: Multiplicação de matrizes em inteiros Int32.
+- `ztt_sgemm(...)`: Multiplicação de matrizes em ponto flutuante FP32 com tiles contíguos.
+- `ztt_igemm(...)`: Multiplicação de matrizes em inteiros Int32 com tiles contíguos.
+- `ztt_sgemm_strided(...)` / `ztt_igemm_strided(...)`: Microkernels strided in-place operando diretamente sobre memória row-major.
+- `ztt_sgemm_strided_2x4` / `ztt_sgemm_strided_2x4_db`: Microkernels multi-registrador $2 \times 4$ com e sem prefetching.
+- `ztt_sgemm_strided_4x4` / `ztt_sgemm_strided_4x4_db`: Microkernels multi-registrador $4 \times 4$ com e sem prefetching.
 
-### Layout de Memória (tile-major)
+### 7.1 Layout de Memória e Algoritmo de Tiling Contíguo
 
-`mls.rm` e `mss.rm` transferem um tile $N \times N$ a partir de um único endereço base, sem _stride_. Por isso os kernels recebem $A$, $B$ e $C$ em layout _block-tiled row-major_ (especificação AME, Seção 7.2.2): cada tile $N \times N$ é contíguo e row-major internamente, e a grade de tiles é row-major. $M$, $K$ e $P$ devem ser múltiplos de $N$; caso contrário o kernel retorna `AME_ERR_ILLEGAL_INSN`.
+`mls.rm` e `mss.rm` transferem um tile $N \times N$ a partir de um único endereço base, sem _stride_. Os kernels `ztt_sgemm` e `ztt_igemm` recebem $A$, $B$ e $C$ em layout _block-tiled row-major_ (especificação AME, Seção 7.2.2): cada tile $N \times N$ é contíguo e row-major internamente, e a grade de tiles é row-major. $M$, $K$ e $P$ devem ser múltiplos de $N$; caso contrário o kernel retorna `AME_ERR_ILLEGAL_INSN`.
 
-O empacotamento, o preenchimento com zeros e o desempacotamento ficam fora do kernel (nos testes, `pack_tiles` / `unpack_tiles`). Quando os acessos com _stride_ (`mls.st` / `mss.st`) forem implementados (Fase 2), esse empacotamento externo deixa de ser necessário.
+Para formatos contíguos, funções auxiliares de empacotamento (`packing.h`) podem ser empregadas para organizar tensores não alinhados antes da chamada ao acelerador.
 
-### Algoritmo de Tiling ($M \times K \times P$)
+#### Algoritmo de Tiling ($M \times K \times P$)
 
 Dadas as matrizes $A [M \times K]$, $B [K \times P]$ e $C [M \times P]$, a multiplicação $C += A \times B$ é particionada em blocos de tamanho fixo $N \times N$:
 
@@ -332,12 +355,12 @@ for (int i = 0; i < M; i += N) {
 
 ---
 
-### Microkernels Strided GEMM (Fase 2 - Hardware In-Place)
+### 7.2 Microkernels Strided In-Place (mls.st / mss.st)
 
-Com o suporte a acessos strided em hardware (`mls.st` / `mss.st`), as matrizes $A, B, C$ podem residir diretamente no layout row-major padrão (ou arbitrariamente strided) na memória, eliminando qualquer etapa de empacotamento (`pack_tiles` / `unpack_tiles`):
+Com o suporte nativo a acessos strided em hardware (`mls.st` / `mss.st`), as matrizes $A, B, C$ residem diretamente no layout row-major padrão (ou com strides arbitrários) na memória do host, eliminando totalmente qualquer sobrecarga de empacotamento intermediário (`pack_tiles` / `unpack_tiles`):
 
-- `ztt_sgemm_strided(...)`: SGEMM FP32 direto na memória com strides `lda, ldb, ldc`.
-- `ztt_igemm_strided(...)`: IGEMM Int32 direto na memória com strides `lda, ldb, ldc`.
+- `ztt_sgemm_strided(...)`: SGEMM FP32 in-place direto na memória com strides `lda, ldb, ldc`.
+- `ztt_igemm_strided(...)`: IGEMM Int32 in-place direto na memória com strides `lda, ldb, ldc`.
 
 ```c
 for (int i = 0; i < M; i += N) {
@@ -364,7 +387,7 @@ for (int i = 0; i < M; i += N) {
 
 ---
 
-### Microkernels Multi-Registrador e Double-Buffering (Fase 3)
+### 7.3 Microkernels Multi-Registrador e Double-Buffering
 
 Para maximizar o reuso de registradores e amortizar os acessos à memória (aumentando a intensidade aritmética), foram desenvolvidos microkernels que mantêm blocos $R_M \times R_P$ de acumuladores simultaneamente:
 
@@ -402,15 +425,21 @@ cd ztt_ame
 make test
 ```
 
-### Benchmark de Contadores
+### Benchmark de Contadores e Desempenho
 
 ```bash
 make bench
 ```
 
-Executa `ztt_sgemm` para várias formas de matriz e imprime uma tabela com as contagens de instruções, MACs, intensidade aritmética, a fração de MACs úteis (sem _padding_) e o tráfego de memória do lado do host (empacotamento).
+O executável de benchmark (`bench_ztt`) avalia o acelerador em duas etapas principais:
 
-Colunas do lado do host: `host B` (bytes lidos e escritos por `pack_tiles` de A, B e C e por `unpack_tiles` de C), `host/AME` (`host B` dividido pelos bytes de `mls.rm` e `mss.rm`) e `host B/MAC` (`host B` por MAC útil).
+1. **Parte 1: Comparação de Tráfego (Software Packing vs. Hardware Strided)**:
+   - Executa `ztt_sgemm` com empacotamento em software (`pack_tiles` / `unpack_tiles` + `mls.rm` / `mss.rm`) e compara diretamente com `ztt_sgemm_strided` operando in-place na memória (`mls.st` / `mss.st`).
+   - Apresenta as instruções de carga, tráfego AME em bytes, tráfego de host em bytes e a redução percentual total de tráfego de memória (demonstrando a eliminação de sobrecarga de cópia no host).
+
+2. **Parte 2: Avaliação de Kernels Multi-Registrador e Prefetching**:
+   - Compara o microkernel baseline $1 \times 1$ com as variantes multi-registrador $2 \times 4$ e $4 \times 4$ (com e sem *double-buffering*).
+   - Apresenta as instruções de carga de matriz (`mls.st`), o reuso por carga de operando ($A$ e $B$), a intensidade aritmética teórica (MACs por carga de memória) e o percentual de redução de acessos à memória em relação ao baseline.
 
 ### Configuração Dinâmica da Dimensão do Tile ($N$)
 
@@ -444,38 +473,53 @@ Isto gerará o binário `test_ztt_riscv`.
 
 ## 9. Suíte de Testes Automatizada
 
-O arquivo `test_ztt.c` contém testes unitários e de integração que validam cada aspecto da especificação:
+O arquivo `test_ztt.c` contém 21 testes unitários e de integração que validam cada aspecto da especificação funcional e dos microkernels:
 
 1. **`test_ownership`**:
    - Confirma que instruções executadas antes de `ame_acquire` falham com `AME_ERR_NOT_OWNED`.
-   - Valida a concessão de posse (`ameown.OWNED = 1`, `rd = GRANTED`).
-   - Valida a revogação de posse após `ame.release`.
+   - Valida a concessão de posse (`ameown.OWNED = 1`, `rd = GRANTED`) e revogação após `ame.release`.
 2. **`test_datatypes_and_zeroing`**:
    - Valida a escrita e leitura de metadados (`msettyp` / `mgettyp` / `asettyp` / `agettyp`).
-   - Verifica se `msettyp` e `asettyp` realizam a limpeza física de bits brutos com zero em registradores previamente sujos com bytes `0xAA` e `0x55`.
+   - Verifica se `msettyp` e `asettyp` realizam a limpeza física de bits brutos com zero em registradores previamente preenchidos com `0xAA` e `0x55`.
 3. **`test_memory_roundtrip`**:
    - Carrega um vetor ordenado em ponto flutuante na memória com `mls.rm` e descarrega com `mss.rm`, validando a integridade bit a bit.
-4. **`test_type_mismatch`**:
+4. **`test_strided_memory_roundtrip`**:
+   - Valida carga e escrita strided bidimensional (`mls.st` e `mss.st`) com saltos arbitrários em memória e verificação bit a bit.
+5. **`test_type_mismatch`**:
    - Configura intencionalmente tipos divergentes entre $M$ e $Acc$ (ex: FP32 vs Int32).
    - Valida a rejeição da operação com `AME_ERR_UNSUPPORTED` e a ativação da flag sticky `amestatus.UN`.
-5. **`test_single_tile_sgemm`**:
+6. **`test_single_tile_sgemm`**:
    - Executa `mmulacc.2d` em um quadrado isolado $N \times N$ (FP32) e compara contra a multiplicação de referência clássica em CPU.
-6. **`test_single_tile_igemm`**:
+7. **`test_single_tile_igemm`**:
    - Executa `mmulacc.2d` em um quadrado isolado $N \times N$ (Int32) com elementos positivos e negativos, comparando contra a referência de CPU.
-7. **`test_full_sgemm`**:
+8. **`test_full_sgemm`**:
    - Multiplicação multi-tile com matrizes arbitrárias de floats ($M=24, K=20, P=28$). Valida que o erro máximo contra a CPU é inferior a $10^{-4}$.
-8. **`test_full_igemm`**:
+9. **`test_full_igemm`**:
    - Multiplicação multi-tile com matrizes arbitrárias de inteiros ($M=24, K=20, P=28$). Valida igualdade exata com a CPU.
-9. **`test_gemm_stats_counts`**:
-   - Executa `ztt_sgemm` e `ztt_igemm` em várias formas de grade de tiles e compara os contadores com a contagem analítica do algoritmo.
-10. **`test_stats_ignore_failed_instructions`**:
-    - Valida que instruções rejeitadas (sem posse, tipos incompatíveis) não alteram os contadores.
-11. **`test_stats_reset`** e **`test_stats_report`**:
-    - Validam `ame_stats_reset` e que `ame_stats_report` imprime os valores dos contadores e as métricas derivadas.
-12. **`test_strided_memory_roundtrip`** e **`test_full_strided_gemm`**:
-    - Validação de carga e escrita strided (`mls.st` / `mss.st`) e execução ponta a ponta do SGEMM strided in-place com zero empacotamento no host.
-13. **`test_pack_stats_unaligned`**, **`test_pack_stats_aligned`**, **`test_unpack_stats`** e **`test_pack_stats_accumulate`**:
-    - Validam os bytes lidos e escritos por `pack_tiles` e `unpack_tiles` (com e sem _padding_) e o acúmulo entre chamadas.
+10. **`test_full_strided_gemm`**:
+    - Execução ponta a ponta do SGEMM strided in-place (`ztt_sgemm_strided`) operando diretamente sobre memória row-major sem empacotamento intermediário.
+11. **`test_gemm_rejects_unpadded_dims`**:
+    - Valida que matrizes cujas dimensões não sejam múltiplos da dimensão linear do tile $N$ são rejeitadas pelo kernel com `AME_ERR_ILLEGAL_INSN`.
+12. **`test_gemm_stats_counts`**:
+    - Executa `ztt_sgemm` e `ztt_igemm` em várias grades de tiles e compara os contadores com a contagem analítica do algoritmo.
+13. **`test_stats_ignore_failed_instructions`**:
+    - Valida que instruções rejeitadas (sem posse, tipos incompatíveis) não incrementam os contadores de estatísticas.
+14. **`test_stats_reset`**:
+    - Valida que `ame_stats_reset` zera completamente todos os contadores de hardware e tráfego.
+15. **`test_stats_report`**:
+    - Valida a formatação e exibição do relatório de métricas via `ame_stats_report`.
+16. **`test_pack_stats_unaligned`**:
+    - Valida a contagem de bytes lidos e escritos pelo helper de empacotamento em matrizes com padding dimensional.
+17. **`test_pack_stats_aligned`**:
+    - Valida a contagem de bytes em matrizes perfeitamente alinhadas a múltiplos de $N$.
+18. **`test_unpack_stats`**:
+    - Valida as estatísticas de leitura e escrita do helper `unpack_tiles`.
+19. **`test_pack_stats_accumulate`**:
+    - Valida o acúmulo de estatísticas entre sucessivas chamadas de empacotamento e desempacotamento.
+20. **`test_register_aliases`**:
+    - Valida o funcionamento dos aliases de conveniência dos registradores de matriz (`m0`, `m1`, etc.) e acumuladores (`acc0`, etc.).
+21. **`test_multi_register_gemm`**:
+    - Valida a exatidão numérica dos microkernels multi-registrador $2 \times 4$, $2 \times 4$ com *double-buffering*, $4 \times 4$ e $4 \times 4$ com *double-buffering* contra a referência de CPU.
 
 ---
 
@@ -483,29 +527,34 @@ O arquivo `test_ztt.c` contém testes unitários e de integração que validam c
 
 `ame_state_t` contém um `ame_stats_t stats` com contadores incrementados apenas por instruções bem-sucedidas:
 
-| Contador                                                 | Incrementado por                       |
-| :------------------------------------------------------- | :------------------------------------- |
-| `mls_rm`, `mss_rm`, `mmulacc_2d`, `mmov_m_a`, `mmov_a_m` | cada chamada bem-sucedida da instrução |
-| `bytes_loaded`                                           | `mls.rm`: `AME_NELEM × elem_bytes`     |
-| `bytes_stored`                                           | `mss.rm`: `AME_NELEM × elem_bytes`     |
-| `macs`                                                   | `mmulacc.2d`: $N^3$                    |
+| Contador | Incrementado por |
+| :--- | :--- |
+| `mls_rm`, `mss_rm`, `mls_st`, `mss_st`, `mmulacc_2d`, `mmov_m_a`, `mmov_a_m` | Cada chamada bem-sucedida da respectiva instrução |
+| `bytes_loaded` | `mls.rm` e `mls.st`: `AME_NELEM × elem_bytes` |
+| `bytes_stored` | `mss.rm` e `mss.st`: `AME_NELEM × elem_bytes` |
+| `macs` | `mmulacc.2d`: $N^3$ multiplicações-acumulações |
 
 - `ame_stats_reset(&ame)` zera os contadores (também zerados por `ame_init`).
 - `ame_stats_report(&ame, stdout)` imprime os contadores, a intensidade aritmética (`macs / (bytes_loaded + bytes_stored)`) e o número de cargas de tile por `mmulacc.2d`.
 
-Para um GEMM com $M_t = M/N$, $K_t = K/N$, $P_t = P/N$ tiles, o kernel executa $M_t P_t (1 + 2K_t)$ `mls.rm`, $M_t P_t$ `mss.rm`, $M_t P_t K_t$ `mmulacc.2d` e $M_t P_t$ de cada `mmov`. Os contadores são exatos e determinísticos; não modelam ciclos nem latências.
+Para um GEMM com $M_t = M/N$, $K_t = K/N$, $P_t = P/N$ tiles:
+- No kernel contíguo baseline (`ztt_sgemm`), executam-se $M_t P_t (1 + 2K_t)$ `mls.rm`, $M_t P_t$ `mss.rm`, $M_t P_t K_t$ `mmulacc.2d` e $M_t P_t$ de cada `mmov`.
+- No kernel strided $1 \times 1$ (`ztt_sgemm_strided`), as cargas e escritas ocorrem diretamente via `mls.st` e `mss.st`.
+- Nos microkernels multi-registrador ($2 \times 4$ e $4 \times 4$), o número de instruções `mls.st` no loop interno cai proporcionalmente ao reúso dos operandos em registradores ($2.67\times$ no $2 \times 4$ e $4\times$ no $4 \times 4$).
+
+Os contadores são exatos e determinísticos; modelam eventos de instrução e volume de dados transferidos.
 
 ### Tráfego do lado do host
 
-Os helpers de empacotamento (`packing.h`) são usados apenas por testes e benchmarks. `pack_tiles` e `unpack_tiles` recebem um `ztt_pack_stats_t *` opcional (`NULL` desativa a contagem), que acumula entre chamadas:
+Os helpers de empacotamento (`packing.h`) são usados apenas por testes e benchmarks de compatibilidade. `pack_tiles` e `unpack_tiles` recebem um `ztt_pack_stats_t *` opcional (`NULL` desativa a contagem), que acumula entre chamadas:
 
 - `pack_tiles`: `bytes_read` conta apenas os elementos lógicos (`rows × cols`); `bytes_written` conta o buffer inteiro com _padding_, incluindo o preenchimento com zeros.
 - `unpack_tiles`: `bytes_read` e `bytes_written` contam os elementos lógicos.
 
-É uma contagem de bytes, não de tempo: assume que o empacotamento é limitado pela memória.
-
-## Referência de API
-
-> **English API Reference**: For a comprehensive English (en-US) reference covering simulator instruction semantics, parameters, return codes, and a kernel development tutorial, see [API_REFERENCE.md](API_REFERENCE.md).
+É uma contagem de bytes, não de tempo: assume que o empacotamento é limitado pela largura de banda de memória.
 
 ---
+
+## 11. Referência de API
+
+> **English API Reference**: For a comprehensive English (en-US) reference covering simulator instruction semantics, parameters, return codes, and a kernel development tutorial, see [API_REFERENCE.md](API_REFERENCE.md).
